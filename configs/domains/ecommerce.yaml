@@ -1,0 +1,26 @@
+# Domain config: Ecommerce
+entities:
+  - Product:
+      fields: [id:int, name:str, price:decimal, inventory:int, description:str]
+  - Order:
+      fields: [id:int, user_id:int, total:decimal, status:str, created_at:datetime]
+  - Cart:
+      fields: [id:int, user_id:int, items:list]
+  - Payment:
+      fields: [id:int, order_id:int, provider:str, amount:decimal, status:str]
+
+business_logic:
+  - inventory_management
+  - payment_processing
+  - order_fulfillment
+  - coupon_codes
+
+integrations:
+  - stripe_payments
+  - email_notifications
+  - inventory_tracking
+
+security:
+  - jwt_auth
+  - rbac
+  - rate_limiting

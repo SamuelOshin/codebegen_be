@@ -1,0 +1,21 @@
+# Domain config: Content Management
+entities:
+  - User:
+      fields: [id:int, username:str, email:str]
+  - Post:
+      fields: [id:int, user_id:int, title:str, body:text, created_at:datetime]
+  - Comment:
+      fields: [id:int, post_id:int, user_id:int, body:text, created_at:datetime]
+
+features:
+  - file_uploads
+  - rich_text
+  - tagging
+
+integrations:
+  - cdn
+  - email_notifications
+
+security:
+  - jwt_auth
+  - rbac

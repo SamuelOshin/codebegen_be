@@ -1,0 +1,76 @@
+[tool.poetry]
+name = "codebegen-be"
+version = "0.1.0"
+description = "AI-powered FastAPI backend generator"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+packages = [ { include = "app" } ]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+# Web framework
+fastapi = "^0.104"
+uvicorn = {extras = ["standard"], version = "^0.24"}
+# Database and migrations
+SQLAlchemy = "^2.0"
+alembic = "^1.13"
+psycopg2-binary = "^2.9"
+asyncpg = "^0.29"
+# Data validation
+pydantic = "^2.5"
+pydantic-settings = "^2.1"
+# Authentication & Security
+python-jose = {extras = ["cryptography"], version = "^3.3"}
+passlib = {extras = ["bcrypt"], version = "^1.7"}
+python-multipart = "^0.0.6"
+# HTTP clients & testing
+httpx = "^0.25"
+requests = "^2.31"
+# Rate limiting & Middleware
+slowapi = "^0.1"
+email-validator = "^2.1"
+# AI/ML Dependencies 
+# moved to optional 'ai' group below to keep base env lightweight
+# Background tasks & Caching
+celery = "^5.3"
+redis = "^5.0"
+# File handling & Storage
+aiofiles = "^23.2"
+python-dotenv = "^1.0"
+# JSON processing
+orjson = "^3.9"
+# Development & Testing
+pytest = "^7.4"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.3"
+isort = "^6.0"
+mypy = "^1.0"
+pytest = "^7.4"
+pytest-asyncio = "^0.21.0"
+# use a known-good pre-commit release
+pre-commit = "^4.3"
+
+[tool.poetry.group.ai]
+optional = true
+
+[tool.poetry.group.ai.dependencies]
+# AI/ML Dependencies (install with: `poetry install --with ai`)
+torch = "^2.1"
+transformers = "^4.36"
+peft = "^0.7"
+accelerate = "^0.25"
+
+[tool.poetry.scripts]
+codebegen = "app.main:app"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+

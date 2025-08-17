@@ -1,0 +1,38 @@
+name: "FastAPI Basic"
+description: "Basic FastAPI template with SQLite database"
+tech_stack: "fastapi_sqlite"
+database: "sqlite"
+orm: "sqlalchemy"
+auth: false
+features:
+  - "REST API endpoints"
+  - "SQLite database"
+  - "Pydantic models"
+  - "Basic project structure"
+  - "Docker support"
+
+files:
+  - "app/main.py"
+  - "app/models/__init__.py"
+  - "app/schemas/__init__.py"
+  - "app/routers/__init__.py"
+  - "app/core/database.py"
+  - "app/core/config.py"
+  - "requirements.txt"
+  - "Dockerfile"
+  - "docker-compose.yml"
+  - "README.md"
+  - ".env.example"
+
+dependencies:
+  - "fastapi>=0.104.0"
+  - "uvicorn[standard]>=0.24.0"
+  - "sqlalchemy>=2.0.0"
+  - "pydantic>=2.5.0"
+  - "python-multipart>=0.0.6"
+
+dev_dependencies:
+  - "pytest>=7.4.0"
+  - "pytest-asyncio>=0.21.0"
+  - "black>=23.0.0"
+  - "isort>=5.12.0"

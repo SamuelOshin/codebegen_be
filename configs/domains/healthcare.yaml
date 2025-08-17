@@ -1,0 +1,265 @@
+# Healthcare Domain Configuration
+# Defines common entities, business logic, and integrations for healthcare projects
+
+entities:
+  Patient:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Unique patient identifier"
+      - name: medical_record_number
+        type: String
+        constraints: [unique, required]
+        description: "Medical record number (MRN)"
+      - name: first_name
+        type: String
+        constraints: [required]
+        description: "Patient first name"
+      - name: last_name
+        type: String
+        constraints: [required]
+        description: "Patient last name"
+      - name: date_of_birth
+        type: Date
+        constraints: [required]
+        description: "Patient date of birth"
+      - name: gender
+        type: String
+        constraints: []
+        description: "Patient gender"
+      - name: phone
+        type: String
+        constraints: []
+        description: "Primary phone number"
+      - name: email
+        type: String
+        constraints: []
+        description: "Email address"
+      - name: address
+        type: JSON
+        constraints: []
+        description: "Patient address details"
+      - name: emergency_contact
+        type: JSON
+        constraints: []
+        description: "Emergency contact information"
+      - name: insurance_info
+        type: JSON
+        constraints: []
+        description: "Insurance provider details"
+
+  Provider:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Provider identifier"
+      - name: npi_number
+        type: String
+        constraints: [unique, required]
+        description: "National Provider Identifier"
+      - name: first_name
+        type: String
+        constraints: [required]
+        description: "Provider first name"
+      - name: last_name
+        type: String
+        constraints: [required]
+        description: "Provider last name"
+      - name: specialty
+        type: String
+        constraints: [required]
+        description: "Medical specialty"
+      - name: license_number
+        type: String
+        constraints: [unique, required]
+        description: "Medical license number"
+      - name: phone
+        type: String
+        constraints: [required]
+        description: "Provider phone number"
+      - name: email
+        type: String
+        constraints: [required]
+        description: "Provider email"
+
+  Appointment:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Appointment identifier"
+      - name: patient_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Patient reference"
+      - name: provider_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Provider reference"
+      - name: scheduled_at
+        type: DateTime
+        constraints: [required]
+        description: "Appointment date and time"
+      - name: duration_minutes
+        type: Integer
+        constraints: [required]
+        description: "Appointment duration"
+      - name: appointment_type
+        type: String
+        constraints: [required]
+        description: "Type of appointment"
+      - name: status
+        type: String
+        constraints: [required]
+        description: "Appointment status"
+      - name: notes
+        type: Text
+        constraints: []
+        description: "Appointment notes"
+
+  MedicalRecord:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Medical record identifier"
+      - name: patient_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Patient reference"
+      - name: provider_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Provider reference"
+      - name: visit_date
+        type: DateTime
+        constraints: [required]
+        description: "Visit date and time"
+      - name: chief_complaint
+        type: Text
+        constraints: []
+        description: "Chief complaint"
+      - name: diagnosis
+        type: Text
+        constraints: []
+        description: "Medical diagnosis"
+      - name: treatment_plan
+        type: Text
+        constraints: []
+        description: "Treatment plan"
+      - name: medications
+        type: JSON
+        constraints: []
+        description: "Prescribed medications"
+      - name: allergies
+        type: JSON
+        constraints: []
+        description: "Known allergies"
+
+business_logic:
+  appointment_scheduling:
+    description: "Appointment booking, rescheduling, and cancellation"
+    services:
+      - "AppointmentService"
+      - "SchedulingService"
+    endpoints:
+      - "/appointments/book"
+      - "/appointments/reschedule"
+      - "/appointments/cancel"
+
+  patient_management:
+    description: "Patient registration, updates, and medical history"
+    services:
+      - "PatientService"
+      - "MedicalRecordService"
+    endpoints:
+      - "/patients/register"
+      - "/patients/{id}/history"
+      - "/patients/{id}/update"
+
+  provider_management:
+    description: "Provider registration, scheduling, and availability"
+    services:
+      - "ProviderService"
+      - "AvailabilityService"
+    endpoints:
+      - "/providers/register"
+      - "/providers/{id}/availability"
+      - "/providers/{id}/schedule"
+
+  hipaa_compliance:
+    description: "HIPAA-compliant data handling and audit trails"
+    services:
+      - "AuditService"
+      - "EncryptionService"
+    endpoints:
+      - "/audit/logs"
+      - "/consent/manage"
+
+integrations:
+  ehr_systems:
+    description: "Electronic Health Record system integration"
+    environment_vars:
+      - "EHR_API_URL"
+      - "EHR_API_KEY"
+      - "EHR_CLIENT_ID"
+
+  insurance_verification:
+    description: "Insurance eligibility and benefits verification"
+    environment_vars:
+      - "INSURANCE_API_URL"
+      - "INSURANCE_API_KEY"
+
+  lab_integration:
+    description: "Laboratory results integration"
+    environment_vars:
+      - "LAB_API_URL"
+      - "LAB_API_KEY"
+
+  pharmacy_integration:
+    description: "Electronic prescription system"
+    environment_vars:
+      - "PHARMACY_API_URL"
+      - "PHARMACY_API_KEY"
+
+security_considerations:
+  - "HIPAA compliance requirements"
+  - "End-to-end encryption for PHI"
+  - "Role-based access control (RBAC)"
+  - "Audit logging for all data access"
+  - "Data retention and purging policies"
+  - "Secure data transmission (TLS 1.3)"
+
+common_endpoints:
+  - path: "/patients"
+    methods: ["GET", "POST"]
+    description: "Patient management"
+  - path: "/patients/{id}"
+    methods: ["GET", "PUT"]
+    description: "Individual patient operations"
+  - path: "/appointments"
+    methods: ["GET", "POST"]
+    description: "Appointment scheduling"
+  - path: "/appointments/{id}"
+    methods: ["GET", "PUT", "DELETE"]
+    description: "Individual appointment operations"
+  - path: "/providers"
+    methods: ["GET", "POST"]
+    description: "Provider management"
+  - path: "/medical-records"
+    methods: ["GET", "POST"]
+    description: "Medical records management"
+
+recommended_features:
+  - "Patient portal"
+  - "Appointment scheduling system"
+  - "Medical records management"
+  - "Provider directory"
+  - "Insurance verification"
+  - "Prescription management"
+  - "Lab results integration"
+  - "HIPAA-compliant audit logging"
+  - "Secure messaging"
+  - "Telehealth capabilities"

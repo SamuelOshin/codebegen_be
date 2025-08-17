@@ -1,0 +1,330 @@
+# Fintech Domain Configuration
+# Defines common entities, business logic, and integrations for financial technology projects
+
+entities:
+  Account:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Account identifier"
+      - name: user_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "User reference"
+      - name: account_number
+        type: String
+        constraints: [unique, required]
+        description: "Account number"
+      - name: account_type
+        type: String
+        constraints: [required]
+        description: "Account type (checking, savings, investment)"
+      - name: balance
+        type: Decimal
+        constraints: [required]
+        description: "Current account balance"
+      - name: currency
+        type: String
+        constraints: [required]
+        description: "Account currency code"
+      - name: status
+        type: String
+        constraints: [required]
+        description: "Account status (active, suspended, closed)"
+      - name: created_at
+        type: DateTime
+        constraints: []
+        description: "Account creation timestamp"
+
+  Transaction:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Transaction identifier"
+      - name: from_account_id
+        type: String
+        constraints: [foreign_key]
+        description: "Source account reference"
+      - name: to_account_id
+        type: String
+        constraints: [foreign_key]
+        description: "Destination account reference"
+      - name: amount
+        type: Decimal
+        constraints: [required]
+        description: "Transaction amount"
+      - name: currency
+        type: String
+        constraints: [required]
+        description: "Transaction currency"
+      - name: transaction_type
+        type: String
+        constraints: [required]
+        description: "Transaction type (transfer, deposit, withdrawal, payment)"
+      - name: description
+        type: String
+        constraints: []
+        description: "Transaction description"
+      - name: reference_number
+        type: String
+        constraints: [unique]
+        description: "External reference number"
+      - name: status
+        type: String
+        constraints: [required]
+        description: "Transaction status (pending, completed, failed, cancelled)"
+      - name: created_at
+        type: DateTime
+        constraints: []
+        description: "Transaction timestamp"
+      - name: processed_at
+        type: DateTime
+        constraints: []
+        description: "Processing timestamp"
+
+  Card:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Card identifier"
+      - name: account_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Associated account reference"
+      - name: card_number
+        type: String
+        constraints: [unique, required]
+        description: "Masked card number"
+      - name: card_type
+        type: String
+        constraints: [required]
+        description: "Card type (debit, credit, prepaid)"
+      - name: expiry_date
+        type: Date
+        constraints: [required]
+        description: "Card expiration date"
+      - name: status
+        type: String
+        constraints: [required]
+        description: "Card status (active, blocked, expired)"
+      - name: daily_limit
+        type: Decimal
+        constraints: []
+        description: "Daily spending limit"
+      - name: monthly_limit
+        type: Decimal
+        constraints: []
+        description: "Monthly spending limit"
+
+  Investment:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Investment identifier"
+      - name: account_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Account reference"
+      - name: symbol
+        type: String
+        constraints: [required]
+        description: "Investment symbol (stock ticker, etc.)"
+      - name: quantity
+        type: Decimal
+        constraints: [required]
+        description: "Number of shares/units"
+      - name: purchase_price
+        type: Decimal
+        constraints: [required]
+        description: "Price per unit at purchase"
+      - name: current_price
+        type: Decimal
+        constraints: []
+        description: "Current market price"
+      - name: purchase_date
+        type: DateTime
+        constraints: [required]
+        description: "Investment purchase date"
+
+  Loan:
+    fields:
+      - name: id
+        type: String
+        constraints: [primary_key]
+        description: "Loan identifier"
+      - name: borrower_id
+        type: String
+        constraints: [foreign_key, required]
+        description: "Borrower user reference"
+      - name: loan_type
+        type: String
+        constraints: [required]
+        description: "Loan type (personal, mortgage, auto)"
+      - name: principal_amount
+        type: Decimal
+        constraints: [required]
+        description: "Original loan amount"
+      - name: outstanding_balance
+        type: Decimal
+        constraints: [required]
+        description: "Current outstanding balance"
+      - name: interest_rate
+        type: Decimal
+        constraints: [required]
+        description: "Annual interest rate"
+      - name: term_months
+        type: Integer
+        constraints: [required]
+        description: "Loan term in months"
+      - name: monthly_payment
+        type: Decimal
+        constraints: [required]
+        description: "Monthly payment amount"
+      - name: status
+        type: String
+        constraints: [required]
+        description: "Loan status (active, paid_off, defaulted)"
+
+business_logic:
+  payment_processing:
+    description: "Secure payment processing and settlement"
+    services:
+      - "PaymentService"
+      - "SettlementService"
+      - "FraudDetectionService"
+    endpoints:
+      - "/payments/process"
+      - "/payments/settle"
+      - "/payments/refund"
+
+  account_management:
+    description: "Account creation, maintenance, and closure"
+    services:
+      - "AccountService"
+      - "BalanceService"
+    endpoints:
+      - "/accounts/create"
+      - "/accounts/{id}/balance"
+      - "/accounts/{id}/close"
+
+  transaction_monitoring:
+    description: "Real-time transaction monitoring and fraud detection"
+    services:
+      - "TransactionService"
+      - "MonitoringService"
+      - "AMLService"
+    endpoints:
+      - "/transactions/monitor"
+      - "/transactions/flag"
+      - "/compliance/aml-check"
+
+  investment_management:
+    description: "Investment portfolio management and trading"
+    services:
+      - "InvestmentService"
+      - "PortfolioService"
+      - "TradingService"
+    endpoints:
+      - "/investments/buy"
+      - "/investments/sell"
+      - "/portfolio/performance"
+
+  loan_origination:
+    description: "Loan application processing and underwriting"
+    services:
+      - "LoanService"
+      - "UnderwritingService"
+      - "CreditCheckService"
+    endpoints:
+      - "/loans/apply"
+      - "/loans/underwrite"
+      - "/loans/approve"
+
+integrations:
+  banking_apis:
+    description: "Integration with banking and payment networks"
+    environment_vars:
+      - "BANK_API_URL"
+      - "BANK_API_KEY"
+      - "SWIFT_CODE"
+    dependencies:
+      - "plaid>=8.0.0"
+
+  credit_bureaus:
+    description: "Credit score and history verification"
+    environment_vars:
+      - "CREDIT_BUREAU_API_URL"
+      - "CREDIT_BUREAU_API_KEY"
+
+  kyc_providers:
+    description: "Know Your Customer verification services"
+    environment_vars:
+      - "KYC_PROVIDER_URL"
+      - "KYC_API_KEY"
+    dependencies:
+      - "jumio>=1.0.0"
+
+  market_data:
+    description: "Real-time market data for investments"
+    environment_vars:
+      - "MARKET_DATA_API_URL"
+      - "MARKET_DATA_API_KEY"
+    dependencies:
+      - "alpha-vantage>=2.3.0"
+
+  regulatory_reporting:
+    description: "Automated regulatory compliance reporting"
+    environment_vars:
+      - "REGULATORY_API_URL"
+      - "REGULATORY_API_KEY"
+
+security_considerations:
+  - "PCI DSS compliance for payment processing"
+  - "End-to-end encryption for sensitive data"
+  - "Multi-factor authentication (MFA)"
+  - "Real-time fraud monitoring"
+  - "AML/KYC compliance"
+  - "Regulatory audit trails"
+  - "Secure API rate limiting"
+  - "Data anonymization and masking"
+
+common_endpoints:
+  - path: "/accounts"
+    methods: ["GET", "POST"]
+    description: "Account management"
+  - path: "/accounts/{id}/transactions"
+    methods: ["GET"]
+    description: "Account transaction history"
+  - path: "/payments"
+    methods: ["POST"]
+    description: "Payment processing"
+  - path: "/transfers"
+    methods: ["POST"]
+    description: "Money transfers"
+  - path: "/cards"
+    methods: ["GET", "POST"]
+    description: "Card management"
+  - path: "/investments"
+    methods: ["GET", "POST"]
+    description: "Investment operations"
+  - path: "/loans"
+    methods: ["GET", "POST"]
+    description: "Loan applications and management"
+
+recommended_features:
+  - "Multi-factor authentication"
+  - "Real-time fraud detection"
+  - "Payment processing"
+  - "Account management"
+  - "Transaction monitoring"
+  - "Investment portfolio tracking"
+  - "Loan origination system"
+  - "KYC/AML compliance"
+  - "Regulatory reporting"
+  - "Mobile banking APIs"
+  - "Cryptocurrency support"
+  - "Real-time notifications"
