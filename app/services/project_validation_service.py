@@ -71,7 +71,7 @@ class ProjectValidationService:
         if name.lower() in self.reserved_names:
             issues.append(ValidationIssue(
                 field="name",
-                message=f"'{name}' is a reserved name and should not be used",
+                message=f"'{html.escape(name)}' is a reserved name and should not be used",
                 severity="warning",
                 suggestion="Consider adding a prefix or suffix to make it unique"
             ))
