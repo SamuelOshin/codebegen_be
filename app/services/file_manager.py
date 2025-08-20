@@ -8,10 +8,10 @@ import shutil
 import zipfile
 import tempfile
 import asyncio
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
-import logging
 
 from app.core.config import settings
 from app.schemas.generation import GenerationStatus
@@ -71,6 +71,25 @@ class FileManager:
         except Exception as e:
             logger.error(f"Error creating project structure: {e}")
             raise
+
+    async def save_generation_files(self, generation_id: str, files: Dict[str, str]) -> bool:
+        """
+        Save generated files to storage.
+        
+        Args:
+            generation_id: Unique identifier for the generation
+            files: Dictionary mapping file paths to content
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            await self.create_project_structure(generation_id, files)
+            logger.info(f"Successfully saved {len(files)} files for generation {generation_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save generation files for {generation_id}: {e}")
+            return False
     
     async def create_zip_archive(self, generation_id: str) -> Optional[Path]:
         """

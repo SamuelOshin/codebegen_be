@@ -53,8 +53,10 @@ async def login(
     """Login and get access token"""
     user_repo = UserRepository(db)
     
-    # Get user by email
+    # Try to find user by email first, then by username
     user = await user_repo.get_by_email(form_data.username)
+    if not user:
+        user = await user_repo.get_by_username(form_data.username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -95,7 +97,7 @@ async def refresh_token(
     """Refresh access token"""
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": str(current_user.id)}, expires_delta=access_token_expires
+        subject=str(current_user.id), expires_delta=access_token_expires
     )
     
     return {

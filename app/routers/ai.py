@@ -8,8 +8,9 @@ Enhanced for Phase 2: Prompt Engineering Enhancement
 - Provides hybrid template + AI approach
 """
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional
 import json
 import asyncio
@@ -18,7 +19,7 @@ import time
 from datetime import datetime
 from uuid import uuid4
 
-from app.core.database import get_db
+from app.core.database import get_async_db
 from app.auth.dependencies import get_current_user
 from app.schemas.ai import (
     GenerationRequest,
@@ -48,7 +49,7 @@ generation_events = {}
 # Enhanced Generation Service (initialized per request)
 enhanced_service_cache = {}
 
-async def get_enhanced_generation_service(db = Depends(get_db)):
+async def get_enhanced_generation_service(db: AsyncSession = Depends(get_async_db)):
     """Get or create Enhanced Generation Service instance"""
     
     # Use a simple cache to avoid recreating the service for each request
@@ -74,21 +75,29 @@ async def generate_project(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     enhanced_service = Depends(get_enhanced_generation_service),
-    db = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Generate a new FastAPI project from natural language prompt"""
     
     try:
         # Create generation record
         gen_repo = GenerationRepository(db)
-        generation = await gen_repo.create({
+        context = request.context or {}
+        context["tech_stack"] = request.tech_stack or ["fastapi", "sqlalchemy"]
+        
+        # Extract project_id from request or context
+        project_id = request.project_id or context.get("created_project_id") or context.get("project_id")
+        
+        generation_data = {
             "user_id": current_user.id,
+            "project_id": project_id,
             "prompt": request.prompt,
-            "context": request.context or {},
-            "tech_stack": request.tech_stack or ["fastapi", "sqlalchemy"],
+            "context": context,
             "status": GenerationStatus.PROCESSING,
             "output_files": {}
-        })
+        }
+        
+        generation = await gen_repo.create(generation_data)
         
         # Initialize event stream
         generation_events[str(generation.id)] = []
@@ -159,9 +168,27 @@ async def generate_project(
             message=f"Enhanced project generation started (Enhanced Prompts: {use_enhanced_prompts})"
         )
         
+    except HTTPException as he:
+        # Re-raise HTTP exceptions (like service unavailable)
+        logger.error(f"HTTP error starting enhanced generation: {he.detail}")
+        raise he
+    except ValueError as ve:
+        # Handle validation/data errors
+        logger.error(f"Validation error starting enhanced generation: {ve}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid request data: {str(ve)}"
+        )
     except Exception as e:
-        logger.error(f"Error starting enhanced generation: {e}")
-        raise HTTPException(status_code=500, detail="Failed to start generation")
+        # Handle all other errors with detailed information
+        import traceback
+        error_detail = f"Error starting generation: {str(e)}"
+        logger.error(f"Unexpected error starting enhanced generation: {error_detail}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
 
 @router.get("/generate/{generation_id}/stream")
 async def stream_generation_progress(
@@ -212,7 +239,7 @@ async def iterate_project(
     request: IterationRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Modify an existing generated project"""
     
@@ -225,11 +252,13 @@ async def iterate_project(
             raise HTTPException(status_code=404, detail="Generation not found")
         
         # Create new generation record for iteration
+        iteration_context = {"iteration_of": request.original_generation_id}
+        original_tech_stack = original.context.get("tech_stack") if original.context else []
+        iteration_context["tech_stack"] = original_tech_stack
         new_generation = await gen_repo.create({
             "user_id": current_user.id,
             "prompt": request.modification_prompt,
-            "context": {"iteration_of": request.original_generation_id},
-            "tech_stack": original.tech_stack,
+            "context": iteration_context,
             "status": GenerationStatus.PROCESSING,
             "output_files": {}
         })
@@ -279,7 +308,13 @@ async def _process_generation(
             "progress": 20
         })
         
-    # Generate project using AI orchestrator
+        # Generate project using AI orchestrator
+        if not ai_orchestrator:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI generation service is not available"
+            )
+        
         result = await ai_orchestrator.generate_project(request)
         
         if not result or not result.get("files"):
@@ -388,6 +423,9 @@ async def _process_iteration(
         })
         
         # Apply modifications using AI orchestrator
+        if not ai_orchestrator:
+            raise Exception("AI generation service is not available")
+        
         modified_files = await ai_orchestrator.iterate_project(
             existing_files=existing_files,
             modification_prompt=request.modification_prompt
@@ -689,7 +727,7 @@ async def _process_enhanced_generation(
         
         # Save files using file manager
         if result.get("files"):
-            file_manager.save_generation_files(generation_id, result["files"])
+            await file_manager.save_generation_files(generation_id, result["files"])
         
         # Save final result
         await _save_generation_result(generation_id, result)

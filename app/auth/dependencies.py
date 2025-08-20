@@ -5,7 +5,7 @@ Provides JWT token validation and user extraction.
 
 from typing import Optional
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
 
@@ -15,8 +15,14 @@ from app.repositories.user_repository import UserRepository
 from app.models.user import User
 from app.schemas.user import TokenData
 
-# HTTP Bearer token scheme
+# OAuth2 Password Bearer scheme for Swagger UI
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# HTTP Bearer token scheme (for direct API access)
 security = HTTPBearer()
+
+# Optional OAuth2 scheme that doesn't raise errors
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 class AuthenticationError(HTTPException):
@@ -30,11 +36,58 @@ class AuthenticationError(HTTPException):
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_async_db)
 ) -> User:
     """
     Extract and validate the current user from JWT token.
+    
+    Args:
+        token: JWT token from OAuth2 scheme
+        db: Database session
+        
+    Returns:
+        User: The authenticated user
+        
+    Raises:
+        AuthenticationError: If token is invalid or user not found
+    """
+    try:
+        # Decode JWT token
+        payload = jwt.decode(
+            token, 
+            settings.SECRET_KEY, 
+            algorithms=[settings.ALGORITHM]
+        )
+        user_id: Optional[str] = payload.get("sub")
+        
+        if user_id is None:
+            raise AuthenticationError("Token missing user ID")
+            
+        token_data = TokenData(user_id=user_id)
+        
+    except JWTError as e:
+        raise AuthenticationError(f"Invalid token: {str(e)}")
+    
+    # Get user from database
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_id(token_data.user_id)
+    
+    if user is None:
+        raise AuthenticationError("User not found")
+        
+    if not user.is_active:
+        raise AuthenticationError("Inactive user")
+        
+    return user
+
+
+async def get_current_user_bearer(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_async_db)
+) -> User:
+    """
+    Extract and validate the current user from Bearer token (direct API access).
     
     Args:
         credentials: Bearer token from Authorization header
@@ -142,19 +195,38 @@ require_admin = RoleChecker(["admin"])
 
 # Optional authentication dependency
 async def get_current_user_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
-    db: AsyncSession = Depends(get_async_db)
+    db: AsyncSession = Depends(get_async_db),
+    token: Optional[str] = Depends(oauth2_scheme_optional)
 ) -> Optional[User]:
     """
     Get current user if token is provided, otherwise return None.
     Useful for endpoints that work both with and without authentication.
     """
-    if credentials is None:
+    if not token:
         return None
         
     try:
-        # Create a new credentials object for get_current_user
-        return await get_current_user(credentials, db)
-    except AuthenticationError:
+        # Use the same logic as get_current_user
+        payload = jwt.decode(
+            token, 
+            settings.SECRET_KEY, 
+            algorithms=[settings.ALGORITHM]
+        )
+        user_id: Optional[str] = payload.get("sub")
+        
+        if user_id is None:
+            return None
+            
+        token_data = TokenData(user_id=user_id)
+        
+        # Get user from database
+        user_repo = UserRepository(db)
+        user = await user_repo.get_by_id(token_data.user_id)
+        
+        if user is None or not user.is_active:
+            return None
+            
+        return user
+    except JWTError:
         return None
 

@@ -127,3 +127,7 @@ local_settings.py
 
 # End: allow team/project-specific overrides in a separate file
 # Create .gitignore_local and add it to your global gitignore if needed
+
+/test_*
+/model_inference_output_1755555449/
+storage/

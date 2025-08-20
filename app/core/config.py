@@ -35,13 +35,25 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     
     # AI Models
-    QWEN_MODEL_PATH: str = "Qwen/Qwen2.5-Coder-32B"
+    QWEN_MODEL_PATH: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"  # Smaller model for local use
     LLAMA_MODEL_PATH: str = "meta-llama/Llama-3.1-8B"
     STARCODER_MODEL_PATH: str = "bigcode/starcoder2-15b"
     MISTRAL_MODEL_PATH: str = "mistralai/Mistral-7B-Instruct-v0.1"
     
+    # Qwen Model Configuration
+    QWEN_LARGE_MODEL_PATH: str = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+    QWEN_SMALL_MODEL_PATH: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"  # For local fallback (much smaller)
+    USE_QWEN_INFERENCE_API: bool = True  # True: Use HF Inference API, False: Load model locally
+    ENABLE_LOCAL_QWEN_FALLBACK: bool = False  # Disable local fallback due to memory constraints
+    FORCE_INFERENCE_MODE: bool = True  # Force HF Inference API for all generations
+    QWEN_MEMORY_THRESHOLD_MB: int = 4096  # Memory threshold for local model loading
+    
+    # Default AI Generation Method
+    DEFAULT_AI_BACKEND: str = "qwen_inference"  # qwen_inference, local_models, hybrid
+    
     # HuggingFace API
     HF_TOKEN: Optional[str] = None
+    HUGGINGFACE_API_KEY: Optional[str] = Field(None, alias="HF_TOKEN")  # Alias for compatibility
     
     # AI Model Configuration
     MAX_NEW_TOKENS: int = 4096
