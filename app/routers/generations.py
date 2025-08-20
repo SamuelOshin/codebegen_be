@@ -17,13 +17,18 @@ from app.repositories.generation_repository import GenerationRepository
 from app.repositories.project_repository import ProjectRepository
 from app.schemas.generation import (
     GenerationCreate, GenerationUpdate, GenerationResponse, 
-    GenerationStatsResponse, GenerationFilters, StreamingProgress
+    GenerationStatsResponse, GenerationFilters, StreamingProgress,
+    TemplateSearchRequest, TemplateSearchResponse, 
+    GenerationFileResponse, GenerationSearchRequest, GenerationSearchResponse
 )
 from app.schemas.user import UserResponse
 from app.services.ai_orchestrator import ai_orchestrator
 from app.services.file_manager import file_manager
 from app.services.github_service import github_service
 from app.services.quality_assessor import quality_assessor
+from app.services.generation_file_service import (
+    generation_file_service, generation_search_service, template_search_service
+)
 from app.models.generation import Generation
 
 logger = logging.getLogger(__name__)
@@ -767,3 +772,116 @@ async def get_recent_generations(
     )
     
     return [GenerationResponse.from_orm(gen) for gen in recent_generations]
+
+
+@router.get(
+    "/{generation_id}/files/{file_path:path}",
+    response_model=GenerationFileResponse,
+    summary="Get individual file content",
+    description="Get content of a specific file from generation for code viewer"
+)
+async def get_generation_file(
+    generation_id: str,
+    file_path: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Get content of a specific file from generation"""
+    generation_repo = GenerationRepository(db)
+    generation = await generation_repo.get_by_id(generation_id)
+    
+    if not generation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation not found"
+        )
+    
+    if generation.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    try:
+        file_response = await generation_file_service.get_file_content(generation_id, file_path)
+        return file_response
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {file_path}"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.post(
+    "/{generation_id}/search",
+    response_model=GenerationSearchResponse,
+    summary="Search within generated files",
+    description="Search for text within all files of a generation"
+)
+async def search_generation_files(
+    generation_id: str,
+    search_request: GenerationSearchRequest,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Search within all files of a generation"""
+    generation_repo = GenerationRepository(db)
+    generation = await generation_repo.get_by_id(generation_id)
+    
+    if not generation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation not found"
+        )
+    
+    if generation.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    try:
+        search_results = await generation_search_service.search_generation(generation_id, search_request)
+        return search_results
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation files not found"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.get(
+    "/templates/search",
+    response_model=TemplateSearchResponse,
+    summary="Search and filter templates",
+    description="Search for templates based on criteria like domain, tech stack, etc."
+)
+async def search_templates(
+    query: Optional[str] = Query(None, min_length=2, max_length=100, description="Search query"),
+    domain: Optional[str] = Query(None, description="Filter by domain"),
+    tech_stack: Optional[List[str]] = Query(None, description="Filter by tech stack"),
+    complexity: Optional[str] = Query(None, description="Filter by complexity (low, medium, high)"),
+    features: Optional[List[str]] = Query(None, description="Filter by features"),
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional)
+):
+    """Search and filter available templates"""
+    search_request = TemplateSearchRequest(
+        query=query,
+        domain=domain,
+        tech_stack=tech_stack,
+        complexity=complexity,
+        features=features
+    )
+    
+    template_results = await template_search_service.search_templates(search_request)
+    return template_results

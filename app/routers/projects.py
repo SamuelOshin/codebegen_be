@@ -10,13 +10,18 @@ from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.core.database import get_async_db
 from app.models.user import User
 from app.repositories.project_repository import ProjectRepository
+from app.services.project_validation_service import project_validation_service, project_preview_service
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
     ProjectResponse,
     ProjectFilters,
     PaginatedProjectResponse,
-    ProjectStatsResponse
+    ProjectStatsResponse,
+    ProjectValidationRequest,
+    ProjectValidationResponse,
+    ProjectPreviewRequest,
+    ProjectPreviewResponse
 )
 
 router = APIRouter()
@@ -259,4 +264,33 @@ async def get_project_stats(
             )
     
     stats = await repo.get_project_stats(project_id)
+    return ProjectStatsResponse(**stats)
+
+
+@router.post("/validate", response_model=ProjectValidationResponse)
+async def validate_project_config(
+    validation_request: ProjectValidationRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Validate project configuration without saving to database"""
+    return await project_validation_service.validate_project(validation_request)
+
+
+@router.post("/preview", response_model=ProjectPreviewResponse)
+async def preview_project_structure(
+    preview_request: ProjectPreviewRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate preview of project structure before generation"""
+    return await project_preview_service.generate_preview(preview_request)
+
+
+@router.get("/stats", response_model=ProjectStatsResponse)
+async def get_global_project_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Get global user statistics for dashboard"""
+    repo = ProjectRepository(db)
+    stats = await repo.get_user_project_stats(current_user.id)
     return ProjectStatsResponse(**stats)

@@ -154,3 +154,73 @@ class IterationRequest(BaseModel):
     modification_prompt: str = Field(..., min_length=10, max_length=2000, 
                                    description="Description of modifications to make")
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context for iteration")
+
+
+class TemplateSearchRequest(BaseModel):
+    """Template search request schema"""
+    query: Optional[str] = Field(None, min_length=2, max_length=100, description="Search query")
+    domain: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    complexity: Optional[str] = Field(None, description="low, medium, high")
+    features: Optional[List[str]] = None
+
+
+class TemplateInfo(BaseModel):
+    """Template information"""
+    name: str
+    display_name: str
+    description: str
+    tech_stack: List[str]
+    domain: Optional[str] = None
+    complexity: str = "medium"
+    features: List[str] = []
+    estimated_files: int = 0
+    estimated_setup_time: Optional[str] = None
+
+
+class TemplateSearchResponse(BaseModel):
+    """Template search response"""
+    templates: List[TemplateInfo]
+    total: int
+    query: Optional[str] = None
+    filters_applied: Dict[str, Any] = {}
+
+
+class GenerationFileResponse(BaseModel):
+    """Individual file content response"""
+    path: str
+    content: str
+    file_type: str
+    size: int
+    encoding: str = "utf-8"
+    language: Optional[str] = None
+    last_modified: Optional[datetime] = None
+
+
+class GenerationSearchRequest(BaseModel):
+    """Search within generation files request"""
+    query: str = Field(..., min_length=1, max_length=200)
+    file_types: Optional[List[str]] = None
+    case_sensitive: bool = False
+    regex: bool = False
+    include_content: bool = True
+
+
+class SearchMatch(BaseModel):
+    """Individual search match"""
+    file_path: str
+    line_number: int
+    line_content: str
+    match_start: int
+    match_end: int
+    context_before: List[str] = []
+    context_after: List[str] = []
+
+
+class GenerationSearchResponse(BaseModel):
+    """Search within generation response"""
+    matches: List[SearchMatch]
+    total_matches: int
+    files_searched: int
+    query: str
+    execution_time: float

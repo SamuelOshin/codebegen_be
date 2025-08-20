@@ -345,6 +345,25 @@ class FileManager:
         except Exception as e:
             logger.error(f"Error validating project structure: {e}")
             return False, [f"Validation error: {e}"]
+    
+    async def get_generation_directory(self, generation_id: str) -> Optional[Path]:
+        """
+        Get the directory path for a generation.
+        
+        Args:
+            generation_id: Unique identifier for the generation
+            
+        Returns:
+            Path to generation directory or None if not found
+        """
+        try:
+            project_dir = self.storage_path / generation_id
+            if project_dir.exists() and project_dir.is_dir():
+                return project_dir
+            return None
+        except Exception as e:
+            logger.error(f"Error getting generation directory: {e}")
+            return None
 
 
 # Global instance
