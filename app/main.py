@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.exceptions import setup_exception_handlers
-from app.routers import auth, projects, generations, ai, webhooks, ab_testing
+from app.routers import auth, projects, generations, ai, webhooks, ab_testing, unified_generation
 from app.services.ai_orchestrator import ai_orchestrator, AIOrchestrator
 
 # Rate limiting
@@ -45,24 +45,28 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
+
+# Unified Generation Router (Recommended)
+app.include_router(unified_generation.router, prefix="/api/v2/generation", tags=["Generation (Unified)"])
+
 app.include_router(generations.router, prefix="/generations", tags=["Generations"])
-app.include_router(ai.router, prefix="/ai", tags=["AI Services"])
+# app.include_router(ai.router, prefix="/ai", tags=["AI Services (Legacy)"], deprecated=True)
+
 app.include_router(ab_testing.router, prefix="/api/v1", tags=["A/B Testing"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
 
 @app.on_event("startup")
 async def startup_event():
     """Load AI models and initialize services"""
-    # Prefer module-level orchestrator; fall back if needed
+    # Initialize AI orchestrator
     try:
         app.state.ai_orchestrator = ai_orchestrator
-    except Exception:
-        app.state.ai_orchestrator = AIOrchestrator()
-    try:
         await app.state.ai_orchestrator.initialize()
-    except Exception:
-        # In test environments without AI deps, skip initialization
-        pass
+        print("AI Orchestrator initialized successfully")
+    except Exception as e:
+        print(f"Failed to initialize AI orchestrator: {e}")
+        # Set a None value so we can handle it gracefully
+        app.state.ai_orchestrator = None
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -24,6 +24,7 @@ class TechStack(str, Enum):
 
 class GenerationRequest(BaseModel):
     prompt: str = Field(..., description="Natural language description of the API")
+    project_id: Optional[str] = Field(None, description="Optional project ID to associate with generation")
     context: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional context like domain, tech preferences"

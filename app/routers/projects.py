@@ -3,6 +3,7 @@ Projects router for project management endpoints.
 """
 
 from typing import List, Optional
+import json
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +28,45 @@ from app.schemas.project import (
 router = APIRouter()
 
 
+def convert_project_to_response(project) -> dict:
+    """Convert a project model to response data, handling string-to-dict conversions"""
+    # Handle constraints: parse JSON string to dict
+    constraints = project.constraints or {}
+    if isinstance(constraints, str):
+        try:
+            constraints = json.loads(constraints) if constraints.strip() else {}
+        except (json.JSONDecodeError, AttributeError):
+            constraints = {}
+    
+    # Handle settings: parse JSON string to dict  
+    settings = project.settings or {}
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings) if settings.strip() else {}
+        except (json.JSONDecodeError, AttributeError):
+            settings = {}
+    
+    return {
+        "id": project.id,
+        "user_id": project.user_id,
+        "organization_id": project.organization_id,
+        "name": project.name,
+        "description": project.description,
+        "domain": project.domain,
+        "tech_stack": project.tech_stack.split(",") if project.tech_stack else [],
+        "constraints": constraints,
+        "status": project.status,
+        "is_public": project.is_public,
+        "github_repo_url": project.github_repo_url,
+        "github_repo_name": project.github_repo_name,
+        "settings": settings,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "generation_count": getattr(project, 'generation_count', 0),
+        "last_generation_at": getattr(project, 'last_generation_at', None)
+    }
+
+
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     project_data: ProjectCreate,
@@ -40,8 +80,46 @@ async def create_project(
     project_dict = project_data.model_dump()
     project_dict["user_id"] = current_user.id
     
-    project = await repo.create(project_dict)
-    return ProjectResponse.model_validate(project)
+    # Handle tech_stack: convert list to single string (join with commas) 
+    # since the model expects a single string, not a list
+    if "tech_stack" in project_dict and project_dict["tech_stack"]:
+        if isinstance(project_dict["tech_stack"], list):
+            project_dict["tech_stack"] = ",".join(project_dict["tech_stack"])
+    else:
+        project_dict["tech_stack"] = ""  # Set default empty string
+    
+    try:
+        project = await repo.create(project_dict)
+        
+        # Convert string fields back to expected types for response
+        project_data = {
+            "id": project.id,
+            "user_id": project.user_id,
+            "organization_id": project.organization_id,
+            "name": project.name,
+            "description": project.description,
+            "domain": project.domain,
+            "tech_stack": project.tech_stack.split(",") if project.tech_stack else [],
+            "constraints": project.constraints or {},
+            "status": project.status,
+            "is_public": project.is_public,
+            "github_repo_url": project.github_repo_url,
+            "github_repo_name": project.github_repo_name,
+            "settings": project.settings or {},
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+            "generation_count": 0,  # Default for new project
+            "last_generation_at": None
+        }
+        
+        return ProjectResponse(**project_data)
+        
+    except Exception as e:
+        # Surface error details for debugging
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Project creation failed: {str(e)}"
+        )
 
 
 @router.get("/", response_model=PaginatedProjectResponse)
@@ -72,14 +150,58 @@ async def list_user_projects(
     projects = await repo.get_by_user_id(current_user.id, filters, skip, limit)
     total = await repo.count_user_projects(current_user.id, filters)
     
-    # Convert to response models
-    project_responses = [ProjectResponse.model_validate(p) for p in projects]
+    # Convert to response models, handling tech_stack and constraints conversion
+    project_responses = []
+    for p in projects:
+        # Handle constraints: parse JSON string to dict
+        constraints = p.constraints or {}
+        if isinstance(constraints, str):
+            try:
+                import json
+                constraints = json.loads(constraints) if constraints.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                constraints = {}
+        
+        # Handle settings: parse JSON string to dict  
+        settings = p.settings or {}
+        if isinstance(settings, str):
+            try:
+                import json
+                settings = json.loads(settings) if settings.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                settings = {}
+        
+        project_data = {
+            "id": p.id,
+            "user_id": p.user_id,
+            "organization_id": p.organization_id,
+            "name": p.name,
+            "description": p.description,
+            "domain": p.domain,
+            "tech_stack": p.tech_stack.split(",") if p.tech_stack else [],
+            "constraints": constraints,
+            "status": p.status,
+            "is_public": p.is_public,
+            "github_repo_url": p.github_repo_url,
+            "github_repo_name": p.github_repo_name,
+            "settings": settings,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+            "generation_count": getattr(p, 'generation_count', 0),
+            "last_generation_at": getattr(p, 'last_generation_at', None)
+        }
+        project_responses.append(ProjectResponse(**project_data))
+    
+    # Calculate pagination values
+    page = (skip // limit) + 1
+    total_pages = (total + limit - 1) // limit  # Ceiling division
     
     return PaginatedProjectResponse(
         projects=project_responses,
         total=total,
-        skip=skip,
-        limit=limit
+        page=page,
+        per_page=limit,
+        total_pages=total_pages
     )
 
 
@@ -107,14 +229,58 @@ async def list_public_projects(
     total_stmt_filters = ProjectFilters(domain=domain, tech_stack=tech_stack, is_public=True)
     total = await repo.count_user_projects("", total_stmt_filters) if not current_user else len(projects)
     
-    # Convert to response models
-    project_responses = [ProjectResponse.model_validate(p) for p in projects]
+    # Convert to response models, handling tech_stack and constraints conversion
+    project_responses = []
+    for p in projects:
+        # Handle constraints: parse JSON string to dict
+        constraints = p.constraints or {}
+        if isinstance(constraints, str):
+            try:
+                import json
+                constraints = json.loads(constraints) if constraints.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                constraints = {}
+        
+        # Handle settings: parse JSON string to dict  
+        settings = p.settings or {}
+        if isinstance(settings, str):
+            try:
+                import json
+                settings = json.loads(settings) if settings.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                settings = {}
+        
+        project_data = {
+            "id": p.id,
+            "user_id": p.user_id,
+            "organization_id": p.organization_id,
+            "name": p.name,
+            "description": p.description,
+            "domain": p.domain,
+            "tech_stack": p.tech_stack.split(",") if p.tech_stack else [],
+            "constraints": constraints,
+            "status": p.status,
+            "is_public": p.is_public,
+            "github_repo_url": p.github_repo_url,
+            "github_repo_name": p.github_repo_name,
+            "settings": settings,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+            "generation_count": getattr(p, 'generation_count', 0),
+            "last_generation_at": getattr(p, 'last_generation_at', None)
+        }
+        project_responses.append(ProjectResponse(**project_data))
+    
+    # Calculate pagination values
+    page = (skip // limit) + 1
+    total_pages = (total + limit - 1) // limit  # Ceiling division
     
     return PaginatedProjectResponse(
         projects=project_responses,
         total=total,
-        skip=skip,
-        limit=limit
+        page=page,
+        per_page=limit,
+        total_pages=total_pages
     )
 
 
@@ -133,14 +299,59 @@ async def search_projects(
     user_id = current_user.id if current_user else None
     projects = await repo.search_projects(q, user_id, include_public, skip, limit)
     
-    # Convert to response models
-    project_responses = [ProjectResponse.model_validate(p) for p in projects]
+    # Convert to response models, handling tech_stack and constraints conversion
+    project_responses = []
+    for p in projects:
+        # Handle constraints: parse JSON string to dict
+        constraints = p.constraints or {}
+        if isinstance(constraints, str):
+            try:
+                import json
+                constraints = json.loads(constraints) if constraints.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                constraints = {}
+        
+        # Handle settings: parse JSON string to dict  
+        settings = p.settings or {}
+        if isinstance(settings, str):
+            try:
+                import json
+                settings = json.loads(settings) if settings.strip() else {}
+            except (json.JSONDecodeError, AttributeError):
+                settings = {}
+        
+        project_data = {
+            "id": p.id,
+            "user_id": p.user_id,
+            "organization_id": p.organization_id,
+            "name": p.name,
+            "description": p.description,
+            "domain": p.domain,
+            "tech_stack": p.tech_stack.split(",") if p.tech_stack else [],
+            "constraints": constraints,
+            "status": p.status,
+            "is_public": p.is_public,
+            "github_repo_url": p.github_repo_url,
+            "github_repo_name": p.github_repo_name,
+            "settings": settings,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+            "generation_count": getattr(p, 'generation_count', 0),
+            "last_generation_at": getattr(p, 'last_generation_at', None)
+        }
+        project_responses.append(ProjectResponse(**project_data))
+    
+    # Calculate pagination values
+    total = len(project_responses)  # Simplified count
+    page = (skip // limit) + 1
+    total_pages = (total + limit - 1) // limit  # Ceiling division
     
     return PaginatedProjectResponse(
         projects=project_responses,
-        total=len(project_responses),  # Simplified count
-        skip=skip,
-        limit=limit
+        total=total,
+        page=page,
+        per_page=limit,
+        total_pages=total_pages
     )
 
 
@@ -179,7 +390,28 @@ async def get_project(
                 detail="Access denied to private project"
             )
     
-    return ProjectResponse.model_validate(project)
+    # Convert to response model, handling tech_stack conversion
+    project_data = {
+        "id": project.id,
+        "user_id": project.user_id,
+        "organization_id": project.organization_id,
+        "name": project.name,
+        "description": project.description,
+        "domain": project.domain,
+        "tech_stack": project.tech_stack.split(",") if project.tech_stack else [],
+        "constraints": project.constraints or {},
+        "status": project.status,
+        "is_public": project.is_public,
+        "github_repo_url": project.github_repo_url,
+        "github_repo_name": project.github_repo_name,
+        "settings": project.settings or {},
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "generation_count": getattr(project, 'generation_count', 0),
+        "last_generation_at": getattr(project, 'last_generation_at', None)
+    }
+    
+    return ProjectResponse(**project_data)
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
@@ -210,7 +442,28 @@ async def update_project(
     update_data = project_data.model_dump(exclude_unset=True)
     updated_project = await repo.update(project_id, **update_data)
     
-    return ProjectResponse.model_validate(updated_project)
+    # Convert to response model, handling tech_stack conversion
+    project_data = {
+        "id": updated_project.id,
+        "user_id": updated_project.user_id,
+        "organization_id": updated_project.organization_id,
+        "name": updated_project.name,
+        "description": updated_project.description,
+        "domain": updated_project.domain,
+        "tech_stack": updated_project.tech_stack.split(",") if updated_project.tech_stack else [],
+        "constraints": updated_project.constraints or {},
+        "status": updated_project.status,
+        "is_public": updated_project.is_public,
+        "github_repo_url": updated_project.github_repo_url,
+        "github_repo_name": updated_project.github_repo_name,
+        "settings": updated_project.settings or {},
+        "created_at": updated_project.created_at,
+        "updated_at": updated_project.updated_at,
+        "generation_count": getattr(updated_project, 'generation_count', 0),
+        "last_generation_at": getattr(updated_project, 'last_generation_at', None)
+    }
+    
+    return ProjectResponse(**project_data)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

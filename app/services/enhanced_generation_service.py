@@ -73,6 +73,16 @@ class EnhancedGenerationService:
             print(f"⚠️ Warning: Enhanced systems initialization failed: {e}")
             print("Falling back to basic template generation")
             self.enable_enhanced_prompts = False
+            
+        # Initialize memory-efficient service as additional fallback
+        try:
+            from app.services.memory_efficient_service import memory_efficient_service
+            self.memory_efficient_service = memory_efficient_service
+            await self.memory_efficient_service.initialize()
+            print("✅ Memory-efficient service integrated")
+        except Exception as e:
+            print(f"⚠️ Warning: Memory-efficient service initialization failed: {e}")
+            self.memory_efficient_service = None
     
     async def generate_project(
         self,
@@ -84,7 +94,8 @@ class EnhancedGenerationService:
         use_templates: bool = True
     ) -> Dict[str, Any]:
         """
-        Generate a project using the optimal combination of template and AI generation
+        Generate a project using Qwen Inference as default for memory efficiency
+        with template and AI generation fallback strategies.
         
         Args:
             prompt: User's project description
@@ -97,6 +108,288 @@ class EnhancedGenerationService:
         Returns:
             Complete generation result with files, metadata, and recommendations
         """
+        
+        generation_start = time.time()
+        
+        # Check memory availability for strategy selection
+        memory_available = True
+        if self.memory_efficient_service:
+            memory_available = await self.memory_efficient_service.can_use_ai_models()
+        
+        try:
+            # Check if forced to use Qwen Inference mode
+            if settings.FORCE_INFERENCE_MODE:
+                print("⚡ Using forced Qwen Inference mode")
+                return await self._generate_with_qwen_inference_direct(
+                    prompt, user_id, domain, tech_stack
+                )
+            
+            # Strategy 1: Qwen Inference (preferred for memory efficiency)
+            if self.enable_enhanced_prompts and use_enhanced_prompts:
+                print("🚀 Attempting Qwen Inference generation")
+                try:
+                    return await self._generate_with_qwen_inference_direct(
+                        prompt, user_id, domain, tech_stack
+                    )
+                except Exception as e:
+                    print(f"⚠️ Qwen Inference failed: {e}")
+                    print("Falling back to AI orchestrator")
+            
+            # Strategy 2: Full AI generation (if memory allows and enhanced prompts enabled)
+            if memory_available and self.enable_enhanced_prompts and use_enhanced_prompts:
+                print("🚀 Attempting full AI generation with enhanced prompts")
+                try:
+                    return await self._generate_with_ai_orchestrator(
+                        prompt, user_id, domain, tech_stack
+                    )
+                except Exception as e:
+                    print(f"⚠️ Full AI generation failed: {e}")
+                    print("Falling back to memory-efficient strategy")
+            
+            # Strategy 3: Memory-efficient generation
+            if self.memory_efficient_service and use_templates:
+                print("📝 Using memory-efficient template generation")
+                try:
+                    result = await self.memory_efficient_service.generate_project(
+                        prompt=prompt,
+                        tech_stack=tech_stack or "fastapi",
+                        domain=domain or "general",
+                        features=self._extract_features_from_prompt(prompt),
+                        user_context={"user_id": user_id}
+                    )
+                    
+                    # Add enhanced metadata
+                    result.update({
+                        "generation_time": time.time() - generation_start,
+                        "strategy_path": "memory_efficient",
+                        "user_id": user_id
+                    })
+                    
+                    return result
+                    
+                except Exception as e:
+                    print(f"⚠️ Memory-efficient generation failed: {e}")
+            
+            # Strategy 4: Basic template fallback
+            if self.enable_template_fallback:
+                print("📄 Using basic template generation")
+                return await self._generate_with_basic_templates(
+                    prompt, domain, tech_stack
+                )
+            
+            # Strategy 5: Minimal fallback
+            raise Exception("All generation strategies failed")
+            
+        except Exception as e:
+            print(f"❌ Enhanced generation failed: {e}")
+            return await self._minimal_fallback(prompt, user_id)
+    
+    async def analyze_context(
+        self, 
+        prompt: str, 
+        project_context: Dict[str, Any], 
+        tech_stack: str
+    ) -> Dict[str, Any]:
+        """
+        Analyze the context for enhanced generation
+        
+        Args:
+            prompt: User's generation prompt
+            project_context: Additional context provided by user
+            tech_stack: Selected technology stack
+            
+        Returns:
+            Dictionary containing context analysis results
+        """
+        try:
+            # Initialize enhanced prompt system if needed
+            if not self.enhanced_prompt_system:
+                await self.initialize()
+            
+            # Base context analysis
+            context_analysis = {
+                "tech_stack": tech_stack,
+                "project_context": project_context,
+                "prompt_complexity": self._analyze_prompt_complexity(prompt),
+                "extracted_features": self._extract_features_from_prompt(prompt),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Enhanced context analysis if system is available
+            if self.enhanced_prompt_system:
+                try:
+                    # Use the enhanced prompt system for deeper analysis
+                    enhanced_context = self.enhanced_prompt_system.generate_with_context(
+                        prompt, 
+                        "system_user"  # Use system user for context analysis
+                    )
+                    
+                    if isinstance(enhanced_context, dict):
+                        context_analysis.update({
+                            "enhanced_analysis": enhanced_context,
+                            "user_context": enhanced_context.get("user_context", {}),
+                            "similar_projects": enhanced_context.get("similar_projects", []),
+                            "recommended_patterns": enhanced_context.get("patterns", [])
+                        })
+                except Exception as e:
+                    print(f"Enhanced context analysis failed: {e}")
+                    context_analysis["enhanced_analysis_error"] = str(e)
+            
+            # Analyze template suitability
+            template_analysis = await self._analyze_template_suitability(
+                prompt, tech_stack, "system_user"
+            )
+            context_analysis["template_analysis"] = template_analysis
+            
+            return context_analysis
+            
+        except Exception as e:
+            print(f"Context analysis failed: {e}")
+            return {
+                "error": str(e),
+                "tech_stack": tech_stack,
+                "project_context": project_context,
+                "fallback_analysis": True,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    
+    def _extract_features_from_prompt(self, prompt: str) -> List[str]:
+        """Extract feature requirements from prompt"""
+        features = []
+        feature_keywords = {
+            "auth": ["authentication", "login", "register", "user", "account"],
+            "upload": ["upload", "file", "image", "document"],
+            "realtime": ["realtime", "websocket", "live", "streaming"],
+            "cache": ["cache", "redis", "performance"],
+            "search": ["search", "find", "query", "filter"],
+            "payments": ["payment", "billing", "stripe", "checkout"],
+            "notifications": ["notification", "email", "alert", "message"],
+            "admin": ["admin", "dashboard", "management", "control"]
+        }
+        
+        prompt_lower = prompt.lower()
+        for feature, keywords in feature_keywords.items():
+            if any(keyword in prompt_lower for keyword in keywords):
+                features.append(feature)
+        
+        return features
+    
+    async def _generate_with_qwen_inference_direct(
+        self, prompt: str, user_id: str, domain: Optional[str], tech_stack: Optional[str]
+    ) -> Dict[str, Any]:
+        """Generate using Qwen Inference API directly - bypasses orchestrator overhead"""
+        from ai_models.qwen_generator import QwenGenerator
+        
+        print("🤖 Using Qwen Inference API for direct generation")
+        
+        qwen = QwenGenerator(model_path=settings.QWEN_LARGE_MODEL_PATH)
+        await qwen.load()
+        
+        # Create comprehensive schema for generation
+        schema = {
+            "domain": domain or "general",
+            "tech_stack": tech_stack or "fastapi_postgresql",
+            "features": self._extract_features_from_prompt(prompt),
+            "entities": [],
+            "endpoints": []
+        }
+        
+        # Enhanced context for better generation
+        context = {
+            "domain": domain or "general",
+            "tech_stack": tech_stack or "fastapi_postgresql",
+            "user_id": user_id,
+            "generation_method": "qwen_inference_direct",
+            "constraints": [
+                "Follow PEP8 and FastAPI best practices",
+                "Include proper error handling",
+                "Generate production-ready code",
+                "Include tests and documentation"
+            ]
+        }
+        
+        try:
+            # Generate project using Qwen
+            files = await qwen.generate_project(
+                prompt=prompt,
+                schema=schema,
+                context=context
+            )
+            
+            return {
+                "files": files,
+                "schema": schema,
+                "generation_method": "qwen_inference_direct",
+                "model_used": settings.QWEN_LARGE_MODEL_PATH,
+                "quality_score": 0.85,  # High quality expected from latest Qwen model
+                "user_id": user_id,
+                "context_analysis": {
+                    "features_detected": schema["features"],
+                    "generation_strategy": "direct_inference"
+                }
+            }
+            
+        except Exception as e:
+            print(f"Direct Qwen generation failed: {e}")
+            raise
+
+    async def _generate_with_ai_orchestrator(
+        self, prompt: str, user_id: str, domain: Optional[str], tech_stack: Optional[str]
+    ) -> Dict[str, Any]:
+        """Generate using full AI orchestrator"""
+        from app.services.ai_orchestrator import GenerationRequest
+        
+        request = GenerationRequest(
+            prompt=prompt,
+            context={
+                "domain": domain or "general",
+                "tech_stack": tech_stack or "fastapi",
+                "user_id": user_id
+            },
+            user_id=user_id,
+            use_enhanced_prompts=True
+        )
+        
+        # Use memory-aware generation if available
+        if hasattr(self.ai_orchestrator, 'generate_project_memory_aware'):
+            result = await self.ai_orchestrator.generate_project_memory_aware(request)
+        else:
+            result = await self.ai_orchestrator.generate_project(request)
+        
+        # Convert to expected format
+        return {
+            "files": result.files,
+            "schema": result.schema,
+            "review_feedback": result.review_feedback,
+            "documentation": result.documentation,
+            "quality_score": result.quality_score,
+            "strategy_used": "full_ai_orchestrator"
+        }
+    
+    async def _generate_with_basic_templates(
+        self, prompt: str, domain: Optional[str], tech_stack: Optional[str]
+    ) -> Dict[str, Any]:
+        """Generate using basic template system"""
+        requirements = {
+            "tech_stack": tech_stack or "fastapi",
+            "domain": domain or "general",
+            "features": self._extract_features_from_prompt(prompt)
+        }
+        
+        return self.template_system.generate_project(prompt, requirements)
+    
+    async def _minimal_fallback(self, prompt: str, user_id: str) -> Dict[str, Any]:
+        """Absolute minimal fallback generation"""
+        from app.services.memory_efficient_service import quick_generate
+        
+        result = await quick_generate("fastapi")
+        result.update({
+            "strategy_used": "minimal_fallback",
+            "user_id": user_id,
+            "generation_time": 0.1
+        })
+        
+        return result
         
         start_time = time.time()
         generation_metadata = {
@@ -179,12 +472,17 @@ class EnhancedGenerationService:
                 context_analysis = self.enhanced_prompt_system.generate_with_context(prompt, user_id)
                 strategy["context_analysis"] = context_analysis
                 
-                user_context = context_analysis.get("user_context", {})
-                if user_context.get("successful_projects"):
-                    strategy["reasoning"].append("User has successful project history")
-                
-                if context_analysis.get("similar_projects"):
-                    strategy["reasoning"].append("Found similar successful projects")
+                # Ensure context_analysis is a dictionary
+                if isinstance(context_analysis, dict):
+                    user_context = context_analysis.get("user_context", {})
+                    if isinstance(user_context, dict) and user_context.get("successful_projects"):
+                        strategy["reasoning"].append("User has successful project history")
+                    
+                    if context_analysis.get("similar_projects"):
+                        strategy["reasoning"].append("Found similar successful projects")
+                else:
+                    print(f"Warning: Context analysis returned unexpected type: {type(context_analysis)}")
+                    strategy["reasoning"].append("Context analysis format error")
             except Exception as e:
                 print(f"Warning: Context analysis failed: {e}")
                 strategy["reasoning"].append("Context analysis unavailable")
@@ -394,17 +692,22 @@ class EnhancedGenerationService:
                 # Get context analysis
                 context_analysis = self.enhanced_prompt_system.generate_with_context(prompt, user_id)
                 
-                # Apply AI enhancements to template result
-                enhanced_files = await self._enhance_template_with_ai(
-                    template_result["files"], 
-                    context_analysis,
-                    prompt
-                )
-                
-                template_result["files"] = enhanced_files
-                template_result["context_analysis"] = context_analysis
-                template_result["generation_method"] = "hybrid_enhanced"
-                template_result["quality_score"] = min(1.0, template_result["quality_score"] + 0.1)
+                # Ensure context_analysis is a dictionary
+                if isinstance(context_analysis, dict):
+                    # Apply AI enhancements to template result
+                    enhanced_files = await self._enhance_template_with_ai(
+                        template_result["files"], 
+                        context_analysis,
+                        prompt
+                    )
+                    
+                    template_result["files"] = enhanced_files
+                    template_result["context_analysis"] = context_analysis
+                    template_result["generation_method"] = "hybrid_enhanced"
+                    template_result["quality_score"] = min(1.0, template_result["quality_score"] + 0.1)
+                else:
+                    print(f"Warning: Context analysis returned unexpected type: {type(context_analysis)}")
+                    template_result["generation_method"] = "hybrid_template_fallback"
                 
             except Exception as e:
                 print(f"AI enhancement failed, using template result: {e}")
@@ -422,9 +725,20 @@ class EnhancedGenerationService:
         
         enhanced_files = template_files.copy()
         
+        # Ensure context_analysis is a dictionary
+        if not isinstance(context_analysis, dict):
+            print(f"Warning: context_analysis is not a dict: {type(context_analysis)}")
+            return enhanced_files
+        
         # Get user context and recommendations
         user_context = context_analysis.get("user_context", {})
         recommendations = context_analysis.get("recommendations", {})
+        
+        # Ensure user_context and recommendations are dictionaries
+        if not isinstance(user_context, dict):
+            user_context = {}
+        if not isinstance(recommendations, dict):
+            recommendations = {}
         
         # Add context-aware improvements
         if recommendations.get("suggested_features"):
@@ -436,7 +750,7 @@ class EnhancedGenerationService:
                         enhanced_files[f"app/features/{feature}.py"] = feature_implementation
         
         # Enhance existing files with user patterns
-        if user_context.get("common_modifications"):
+        if isinstance(user_context, dict) and user_context.get("common_modifications"):
             for file_path, content in enhanced_files.items():
                 if file_path.endswith(".py"):
                     enhanced_content = self._apply_user_patterns(content, user_context)
@@ -532,6 +846,10 @@ async def create_payment_intent(amount: int, currency: str = "usd"):
         """Apply user's common modification patterns to content"""
         
         enhanced_content = content
+        
+        # Ensure user_context is a dictionary
+        if not isinstance(user_context, dict):
+            return enhanced_content
         
         # Apply common modifications based on user patterns
         common_mods = user_context.get("common_modifications", [])

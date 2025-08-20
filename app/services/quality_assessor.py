@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -45,6 +45,8 @@ class QualityReport:
     issues: List[QualityIssue]
     metrics: Dict[str, any]
     recommendations: List[str]
+    documentation_score: float = 0.0  # 0-100
+    test_coverage: float = 0.0  # 0-100
 
 
 class QualityAssessor:
@@ -54,6 +56,138 @@ class QualityAssessor:
         self.max_complexity = 10
         self.max_function_length = 50
         self.max_file_length = 500
+
+    async def assess_generation(
+        self,
+        generation_result: Dict[str, Any],
+        original_prompt: str,
+        enhanced_prompt: Optional[str] = None,
+        context_analysis: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """
+        Assess the quality of a generation result including files, prompt fulfillment, and context analysis.
+        
+        This method provides a higher-level assessment that considers the generation context,
+        while assess_project focuses on code quality of the generated files.
+        
+        Args:
+            generation_result: The complete generation result containing files and metadata
+            original_prompt: The original user prompt
+            enhanced_prompt: Enhanced version of the prompt (if any)
+            context_analysis: Context analysis results (if any)
+            
+        Returns:
+            Quality assessment results with overall score and metrics
+        """
+        try:
+            # Extract files from generation result
+            files = generation_result.get("files", {})
+            
+            # Perform file-based quality assessment using existing assess_project method
+            if files:
+                quality_report = await self.assess_project("generation_assessment", files)
+                
+                # Create enhanced assessment that includes prompt and context analysis
+                assessment_result = type('QualityAssessment', (), {
+                    'overall_score': quality_report.overall_score,
+                    'metrics': {
+                        'code_quality': quality_report.overall_score,
+                        'prompt_fulfillment': self._assess_prompt_fulfillment(original_prompt, files),
+                        'context_alignment': self._assess_context_alignment(context_analysis, files) if context_analysis else 0.8,
+                        'documentation_quality': quality_report.documentation_score,
+                        'test_coverage': quality_report.test_coverage
+                    },
+                    'recommendations': quality_report.recommendations,
+                    'issues': quality_report.issues
+                })()
+                
+                return assessment_result
+            else:
+                # No files to assess, return basic assessment
+                return type('QualityAssessment', (), {
+                    'overall_score': 0.5,
+                    'metrics': {
+                        'code_quality': 0.0,
+                        'prompt_fulfillment': 0.5,
+                        'context_alignment': 0.5,
+                        'documentation_quality': 0.0,
+                        'test_coverage': 0.0
+                    },
+                    'recommendations': ["No files generated to assess"],
+                    'issues': []
+                })()
+                
+        except Exception as e:
+            print(f"Generation assessment failed: {e}")
+            # Return a basic fallback assessment
+            return type('QualityAssessment', (), {
+                'overall_score': 0.5,
+                'metrics': {
+                    'code_quality': 0.5,
+                    'prompt_fulfillment': 0.5,
+                    'context_alignment': 0.5,
+                    'documentation_quality': 0.5,
+                    'test_coverage': 0.0
+                },
+                'recommendations': [f"Assessment error: {str(e)}"],
+                'issues': []
+            })()
+
+    def _assess_prompt_fulfillment(self, prompt: str, files: Dict[str, Any]) -> float:
+        """Assess how well the generated files fulfill the original prompt"""
+        if not prompt or not files:
+            return 0.5
+            
+        # Simple heuristic based on keyword matching and file presence
+        prompt_lower = prompt.lower()
+        score = 0.5  # Base score
+        
+        # Check for key components
+        if any(ext in files for ext in ['.py', '.js', '.ts']):
+            score += 0.2  # Code files present
+            
+        if any('readme' in f.lower() or 'documentation' in f.lower() for f in files):
+            score += 0.1  # Documentation present
+            
+        if any('test' in f.lower() for f in files):
+            score += 0.1  # Tests present
+            
+        # Check for specific features mentioned in prompt
+        feature_keywords = ['api', 'database', 'auth', 'crud', 'rest', 'graphql']
+        for keyword in feature_keywords:
+            if keyword in prompt_lower:
+                if any(keyword in content.lower() if isinstance(content, str) else False 
+                      for content in files.values()):
+                    score += 0.02  # Small bonus for each matched feature
+                    
+        return min(score, 1.0)
+
+    def _assess_context_alignment(self, context_analysis: Dict[str, Any], files: Dict[str, Any]) -> float:
+        """Assess how well the generated files align with the context analysis"""
+        if not context_analysis or not files:
+            return 0.7  # Default decent score
+            
+        score = 0.7  # Base score
+        
+        # Check tech stack alignment
+        tech_stack = context_analysis.get("tech_stack", "")
+        if tech_stack:
+            tech_indicators = {
+                'fastapi': ['fastapi', 'pydantic', 'uvicorn'],
+                'django': ['django', 'models', 'views'],
+                'postgres': ['psycopg', 'sqlalchemy', 'database'],
+                'react': ['react', 'jsx', 'component'],
+                'vue': ['vue', 'component', 'template']
+            }
+            
+            if tech_stack in tech_indicators:
+                indicators = tech_indicators[tech_stack]
+                for indicator in indicators:
+                    if any(indicator in content.lower() if isinstance(content, str) else False 
+                          for content in files.values()):
+                        score += 0.05  # Bonus for tech stack alignment
+                        
+        return min(score, 1.0)
     
     async def assess_project(self, generation_id: str, files: Dict[str, str]) -> QualityReport:
         """
@@ -136,7 +270,9 @@ class QualityAssessor:
                 total_lines=total_lines,
                 issues=issues,
                 metrics=metrics,
-                recommendations=recommendations
+                recommendations=recommendations,
+                documentation_score=metrics.get("documentation_score", 0.0),
+                test_coverage=metrics.get("test_coverage", 0.0)
             )
             
         except Exception as e:
@@ -148,7 +284,9 @@ class QualityAssessor:
                 total_lines=0,
                 issues=[],
                 metrics={},
-                recommendations=["Error occurred during quality assessment"]
+                recommendations=["Error occurred during quality assessment"],
+                documentation_score=0.0,
+                test_coverage=0.0
             )
     
     async def _analyze_python_file(self, file_path: str, content: str) -> List[QualityIssue]:

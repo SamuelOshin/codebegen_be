@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, and_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.repositories.base import BaseRepository
@@ -18,6 +19,31 @@ class GenerationRepository(BaseRepository[Generation]):
     
     def __init__(self, session: AsyncSession):
         super().__init__(session, Generation)
+    
+    async def get_by_id(self, generation_id: str) -> Optional[Generation]:
+        """Get generation by ID with eagerly loaded artifacts"""
+        stmt = (
+            select(Generation)
+            .where(Generation.id == generation_id)
+            .options(selectinload(Generation.artifacts))
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+    
+    async def create(self, obj_data: Dict[str, Any]) -> Generation:
+        """Create new generation with eagerly loaded artifacts"""
+        # Create the generation
+        db_obj = Generation(**obj_data)
+        self.db.add(db_obj)
+        try:
+            await self.db.commit()
+            await self.db.refresh(db_obj)
+            
+            # Re-fetch with loaded artifacts
+            return await self.get_by_id(db_obj.id)
+        except Exception as e:
+            await self.db.rollback()
+            raise ValueError(f"Failed to create Generation: {str(e)}")
     
     async def get_by_user_id(
         self, 
@@ -49,7 +75,7 @@ class GenerationRepository(BaseRepository[Generation]):
                 stmt = stmt.where(Generation.created_at <= filters.end_date)
         
         stmt = stmt.order_by(Generation.created_at.desc()).offset(skip).limit(limit)
-        result = await self.session.execute(stmt)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
     
     async def get_by_project_id(self, project_id: str) -> List[Generation]:
@@ -60,7 +86,7 @@ class GenerationRepository(BaseRepository[Generation]):
             .options(selectinload(Generation.artifacts))
             .order_by(Generation.created_at.desc())
         )
-        result = await self.session.execute(stmt)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
     
     async def get_by_status(self, status: str, limit: int = 100) -> List[Generation]:
@@ -71,7 +97,7 @@ class GenerationRepository(BaseRepository[Generation]):
             .order_by(Generation.created_at.desc())
             .limit(limit)
         )
-        result = await self.session.execute(stmt)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
     
     async def get_active_generations(self, user_id: str) -> List[Generation]:
@@ -90,7 +116,7 @@ class GenerationRepository(BaseRepository[Generation]):
             .options(selectinload(Generation.artifacts))
             .order_by(Generation.created_at.desc())
         )
-        result = await self.session.execute(stmt)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
     
     async def get_iterations(self, parent_generation_id: str) -> List[Generation]:
@@ -101,7 +127,7 @@ class GenerationRepository(BaseRepository[Generation]):
             .options(selectinload(Generation.artifacts))
             .order_by(Generation.created_at.asc())
         )
-        result = await self.session.execute(stmt)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
     
     async def update_status(
@@ -125,8 +151,8 @@ class GenerationRepository(BaseRepository[Generation]):
             .values(**update_data)
             .returning(Generation)
         )
-        result = await self.session.execute(stmt)
-        await self.session.commit()
+        result = await self.db.execute(stmt)
+        await self.db.commit()
         return result.scalar()
     
     async def update_progress(
@@ -169,8 +195,8 @@ class GenerationRepository(BaseRepository[Generation]):
             .values(**update_data)
             .returning(Generation)
         )
-        result = await self.session.execute(stmt)
-        await self.session.commit()
+        result = await self.db.execute(stmt)
+        await self.db.commit()
         return result.scalar()
     
     async def add_artifact(
@@ -189,9 +215,9 @@ class GenerationRepository(BaseRepository[Generation]):
             file_size=file_size,
             file_metadata=file_metadata
         )
-        self.session.add(artifact)
-        await self.session.commit()
-        await self.session.refresh(artifact)
+        self.db.add(artifact)
+        await self.db.commit()
+        await self.db.refresh(artifact)
         return artifact
     
     async def get_user_statistics(self, user_id: str) -> GenerationStatsResponse:
@@ -223,16 +249,16 @@ class GenerationRepository(BaseRepository[Generation]):
         )
         
         # Execute all queries
-        total_result = await self.session.execute(total_stmt)
-        completed_result = await self.session.execute(completed_stmt)
-        failed_result = await self.session.execute(failed_stmt)
-        pending_result = await self.session.execute(pending_stmt)
-        avg_quality_result = await self.session.execute(avg_quality_stmt)
-        avg_time_result = await self.session.execute(avg_time_stmt)
+        total_result = await self.db.execute(total_stmt)
+        completed_result = await self.db.execute(completed_stmt)
+        failed_result = await self.db.execute(failed_stmt)
+        pending_result = await self.db.execute(pending_stmt)
+        avg_quality_result = await self.db.execute(avg_quality_stmt)
+        avg_time_result = await self.db.execute(avg_time_stmt)
         
         # Count total files generated (sum of artifacts)
         files_stmt = select(func.count(Artifact.id)).join(Generation).where(Generation.user_id == user_id)
-        files_result = await self.session.execute(files_stmt)
+        files_result = await self.db.execute(files_stmt)
         
         return GenerationStatsResponse(
             total_generations=total_result.scalar() or 0,
@@ -269,6 +295,18 @@ class GenerationRepository(BaseRepository[Generation]):
             .values(**update_data)
             .returning(Generation)
         )
-        result = await self.session.execute(stmt)
-        await self.session.commit()
+        result = await self.db.execute(stmt)
+        await self.db.commit()
         return result.scalar()
+    
+    async def get_recent_generations(self, user_id: str, limit: int = 10) -> List[Generation]:
+        """Get user's most recent generations"""
+        stmt = (
+            select(Generation)
+            .where(Generation.user_id == user_id)
+            .options(selectinload(Generation.artifacts))
+            .order_by(Generation.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
