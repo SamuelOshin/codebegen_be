@@ -224,3 +224,52 @@ class GenerationSearchResponse(BaseModel):
     files_searched: int
     query: str
     execution_time: float
+
+
+class GitHubDeploymentRequest(BaseModel):
+    """GitHub deployment request schema"""
+    repo_name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    private: bool = True
+    github_token: str = Field(..., min_length=1)
+    branch_name: str = "main"
+    commit_message: str = "Initial deployment from CodebeGen"
+    include_ci_cd: bool = False
+    deployment_type: str = Field(default="repository", description="repository, pages, vercel")
+
+
+class GitHubDeploymentResponse(BaseModel):
+    """GitHub deployment response"""
+    success: bool
+    repository_url: str
+    clone_url: str
+    deployment_url: Optional[str] = None
+    branch: str
+    commit_sha: Optional[str] = None
+    ci_cd_configured: bool = False
+    message: str
+
+
+class GenerationComparisonRequest(BaseModel):
+    """Generation comparison request"""
+    include_content: bool = True
+    comparison_type: str = Field(default="diff", description="diff, structure, metrics")
+
+
+class FileComparison(BaseModel):
+    """File comparison result"""
+    path: str
+    status: str = Field(..., description="added, removed, modified, unchanged")
+    size_change: Optional[int] = None
+    content_diff: Optional[str] = None
+    changes_summary: Optional[str] = None
+
+
+class GenerationComparisonResponse(BaseModel):
+    """Generation comparison response"""
+    generation_1_id: str
+    generation_2_id: str
+    comparison_summary: Dict[str, Any]
+    file_comparisons: List[FileComparison]
+    metrics_comparison: Dict[str, Any]
+    recommendations: List[str]

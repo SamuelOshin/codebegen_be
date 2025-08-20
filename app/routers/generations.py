@@ -19,7 +19,9 @@ from app.schemas.generation import (
     GenerationCreate, GenerationUpdate, GenerationResponse, 
     GenerationStatsResponse, GenerationFilters, StreamingProgress,
     TemplateSearchRequest, TemplateSearchResponse, 
-    GenerationFileResponse, GenerationSearchRequest, GenerationSearchResponse
+    GenerationFileResponse, GenerationSearchRequest, GenerationSearchResponse,
+    GitHubDeploymentRequest, GitHubDeploymentResponse,
+    GenerationComparisonRequest, GenerationComparisonResponse
 )
 from app.schemas.user import UserResponse
 from app.services.ai_orchestrator import ai_orchestrator
@@ -28,6 +30,9 @@ from app.services.github_service import github_service
 from app.services.quality_assessor import quality_assessor
 from app.services.generation_file_service import (
     generation_file_service, generation_search_service, template_search_service
+)
+from app.services.github_deployment_service import (
+    github_deployment_service, generation_comparison_service
 )
 from app.models.generation import Generation
 
@@ -885,3 +890,127 @@ async def search_templates(
     
     template_results = await template_search_service.search_templates(search_request)
     return template_results
+
+
+@router.post(
+    "/{generation_id}/deploy/github",
+    response_model=GitHubDeploymentResponse,
+    summary="Deploy to GitHub with advanced options",
+    description="Deploy generation to GitHub with CI/CD, Pages, or Vercel configuration"
+)
+async def deploy_to_github_advanced(
+    generation_id: str,
+    deployment_request: GitHubDeploymentRequest,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Deploy generation to GitHub with advanced deployment options"""
+    generation_repo = GenerationRepository(db)
+    generation = await generation_repo.get_by_id(generation_id)
+    
+    if not generation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation not found"
+        )
+    
+    if generation.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    try:
+        deployment_result = await github_deployment_service.deploy_to_github(
+            generation_id, deployment_request
+        )
+        
+        if not deployment_result.success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=deployment_result.message
+            )
+        
+        return deployment_result
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"GitHub deployment failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Deployment failed: {str(e)}"
+        )
+
+
+@router.get(
+    "/compare/{generation_id_1}/{generation_id_2}",
+    response_model=GenerationComparisonResponse,
+    summary="Compare two generations",
+    description="Compare two generations and analyze differences in files, structure, and metrics"
+)
+async def compare_generations(
+    generation_id_1: str,
+    generation_id_2: str,
+    include_content: bool = Query(True, description="Include file content differences"),
+    comparison_type: str = Query("diff", description="Type of comparison: diff, structure, metrics"),
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Compare two generations and return detailed analysis"""
+    generation_repo = GenerationRepository(db)
+    
+    # Verify both generations exist and user has access
+    generation_1 = await generation_repo.get_by_id(generation_id_1)
+    generation_2 = await generation_repo.get_by_id(generation_id_2)
+    
+    if not generation_1:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Generation {generation_id_1} not found"
+        )
+    
+    if not generation_2:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Generation {generation_id_2} not found"
+        )
+    
+    if generation_1.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied to generation {generation_id_1}"
+        )
+    
+    if generation_2.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied to generation {generation_id_2}"
+        )
+    
+    try:
+        comparison_request = GenerationComparisonRequest(
+            include_content=include_content,
+            comparison_type=comparison_type
+        )
+        
+        comparison_result = await generation_comparison_service.compare_generations(
+            generation_id_1, generation_id_2, comparison_request
+        )
+        
+        return comparison_result
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Generation comparison failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Comparison failed: {str(e)}"
+        )
