@@ -18,7 +18,6 @@ from app.repositories.project_repository import ProjectRepository
 from app.schemas.generation import (
     GenerationCreate, GenerationUpdate, GenerationResponse, 
     GenerationStatsResponse, GenerationFilters, StreamingProgress,
-    TemplateSearchRequest, TemplateSearchResponse, 
     GenerationFileResponse, GenerationSearchRequest, GenerationSearchResponse,
     GitHubDeploymentRequest, GitHubDeploymentResponse,
     GenerationComparisonRequest, GenerationComparisonResponse
@@ -29,8 +28,9 @@ from app.services.file_manager import file_manager
 from app.services.github_service import github_service
 from app.services.quality_assessor import quality_assessor
 from app.services.generation_file_service import (
-    generation_file_service, generation_search_service, template_search_service
+    generation_file_service, generation_search_service
 )
+
 from app.services.github_deployment_service import (
     github_deployment_service, generation_comparison_service
 )
@@ -1134,70 +1134,6 @@ async def cancel_generation(
 
 
 @router.get(
-    "/{generation_id}/stream",
-    summary="Stream generation progress",
-    description="Get real-time streaming updates of generation progress"
-)
-async def stream_generation_progress(
-    generation_id: str,
-    current_user: UserResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db)
-):
-    """Stream generation progress in real-time"""
-    generation_repo = GenerationRepository(db)
-    
-    generation = await generation_repo.get_by_id(generation_id)
-    if not generation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Generation not found"
-        )
-    
-    if generation.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this generation"
-        )
-    
-    async def generate_progress_stream():
-        """Generate Server-Sent Events for progress updates"""
-        while True:
-            # Get latest generation state
-            current_generation = await generation_repo.get_by_id(generation_id)
-            if not current_generation:
-                break
-                
-            progress = StreamingProgress(
-                generation_id=generation_id,
-                status=current_generation.status,
-                stage="unknown",  # This would be set by the AI orchestrator
-                progress=0.0,  # This would be calculated based on stage
-                message=f"Generation is {current_generation.status}",
-                estimated_time_remaining=None
-            )
-            
-            # Send progress update
-            yield f"data: {progress.model_dump_json()}\n\n"
-            
-            # Break if generation is complete
-            if current_generation.status in ["completed", "failed", "cancelled"]:
-                break
-                
-            # Wait before next update
-            await asyncio.sleep(2)
-    
-    return StreamingResponse(
-        generate_progress_stream(),
-        media_type="text/plain",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Content-Type": "text/event-stream"
-        }
-    )
-
-
-@router.get(
     "/{generation_id}/iterations",
     response_model=List[GenerationResponse],
     summary="Get generation iterations",
@@ -1228,66 +1164,6 @@ async def get_generation_iterations(
     iterations = await generation_repo.get_iterations(generation_id)
     return [GenerationResponse.from_orm(iteration) for iteration in iterations]
 
-
-@router.post(
-    "/{generation_id}/iterate",
-    response_model=GenerationResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create generation iteration",
-    description="Create a new iteration based on existing generation"
-)
-async def create_iteration(
-    generation_id: str,
-    iteration_data: GenerationCreate,
-    background_tasks: BackgroundTasks,
-    current_user: UserResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db)
-):
-    """Create an iteration of an existing generation"""
-    generation_repo = GenerationRepository(db)
-    
-    # Verify parent generation exists and user has access
-    parent_generation = await generation_repo.get_by_id(generation_id)
-    if not parent_generation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Parent generation not found"
-        )
-    
-    if parent_generation.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to iterate on this generation"
-        )
-    
-    # Force iteration settings
-    iteration_data.parent_generation_id = generation_id
-    iteration_data.project_id = parent_generation.project_id
-    
-    # Create iteration
-    iteration = Generation(
-        user_id=current_user.id,
-        project_id=parent_generation.project_id,
-        type=iteration_data.type,
-        template=iteration_data.template,
-        description=iteration_data.description,
-        requirements=iteration_data.requirements,
-        template_variables=iteration_data.template_variables,
-        parent_generation_id=generation_id,
-        is_iteration=True,
-        status="pending"
-    )
-    
-    saved_iteration = await generation_repo.create(iteration)
-    
-    # Start iteration process in background
-    background_tasks.add_task(
-        start_generation_process,
-        saved_iteration.id,
-        iteration_data.dict()
-    )
-    
-    return GenerationResponse.from_orm(saved_iteration)
 
 
 @router.get(
@@ -1592,39 +1468,6 @@ async def export_to_github(
             detail=f"GitHub export failed: {str(e)}"
         )
 
-
-@router.get(
-    "/templates",
-    summary="Get available templates",
-    description="Get list of available project templates"
-)
-async def get_available_templates():
-    """Get available project templates"""
-    # This would come from the template service
-    return {
-        "templates": [
-            {
-                "name": "fastapi_basic",
-                "display_name": "FastAPI Basic",
-                "description": "Basic FastAPI project with authentication",
-                "tech_stack": ["fastapi", "pydantic", "uvicorn"]
-            },
-            {
-                "name": "fastapi_sqlalchemy",
-                "display_name": "FastAPI + SQLAlchemy",
-                "description": "FastAPI with SQLAlchemy ORM and PostgreSQL",
-                "tech_stack": ["fastapi", "sqlalchemy", "postgresql", "alembic"]
-            },
-            {
-                "name": "fastapi_mongo",
-                "display_name": "FastAPI + MongoDB",
-                "description": "FastAPI with MongoDB database",
-                "tech_stack": ["fastapi", "motor", "mongodb", "beanie"]
-            }
-        ]
-    }
-
-
 @router.get(
     "/recent",
     response_model=List[GenerationResponse],
@@ -1733,31 +1576,7 @@ async def search_generation_files(
         )
 
 
-@router.get(
-    "/templates/search",
-    response_model=TemplateSearchResponse,
-    summary="Search and filter templates",
-    description="Search for templates based on criteria like domain, tech stack, etc."
-)
-async def search_templates(
-    query: Optional[str] = Query(None, min_length=2, max_length=100, description="Search query"),
-    domain: Optional[str] = Query(None, description="Filter by domain"),
-    tech_stack: Optional[List[str]] = Query(None, description="Filter by tech stack"),
-    complexity: Optional[str] = Query(None, description="Filter by complexity (low, medium, high)"),
-    features: Optional[List[str]] = Query(None, description="Filter by features"),
-    current_user: Optional[UserResponse] = Depends(get_current_user_optional)
-):
-    """Search and filter available templates"""
-    search_request = TemplateSearchRequest(
-        query=query,
-        domain=domain,
-        tech_stack=tech_stack,
-        complexity=complexity,
-        features=features
-    )
-    
-    template_results = await template_search_service.search_templates(search_request)
-    return template_results
+
 
 
 @router.post(
