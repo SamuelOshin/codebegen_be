@@ -154,3 +154,122 @@ class IterationRequest(BaseModel):
     modification_prompt: str = Field(..., min_length=10, max_length=2000, 
                                    description="Description of modifications to make")
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context for iteration")
+
+
+class TemplateSearchRequest(BaseModel):
+    """Template search request schema"""
+    query: Optional[str] = Field(None, min_length=2, max_length=100, description="Search query")
+    domain: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    complexity: Optional[str] = Field(None, description="low, medium, high")
+    features: Optional[List[str]] = None
+
+
+class TemplateInfo(BaseModel):
+    """Template information"""
+    name: str
+    display_name: str
+    description: str
+    tech_stack: List[str]
+    domain: Optional[str] = None
+    complexity: str = "medium"
+    features: List[str] = []
+    estimated_files: int = 0
+    estimated_setup_time: Optional[str] = None
+
+
+class TemplateSearchResponse(BaseModel):
+    """Template search response"""
+    templates: List[TemplateInfo]
+    total: int
+    query: Optional[str] = None
+    filters_applied: Dict[str, Any] = {}
+
+
+class GenerationFileResponse(BaseModel):
+    """Individual file content response"""
+    path: str
+    content: str
+    file_type: str
+    size: int
+    encoding: str = "utf-8"
+    language: Optional[str] = None
+    last_modified: Optional[datetime] = None
+
+
+class GenerationSearchRequest(BaseModel):
+    """Search within generation files request"""
+    query: str = Field(..., min_length=1, max_length=200)
+    file_types: Optional[List[str]] = None
+    case_sensitive: bool = False
+    regex: bool = False
+    include_content: bool = True
+
+
+class SearchMatch(BaseModel):
+    """Individual search match"""
+    file_path: str
+    line_number: int
+    line_content: str
+    match_start: int
+    match_end: int
+    context_before: List[str] = []
+    context_after: List[str] = []
+
+
+class GenerationSearchResponse(BaseModel):
+    """Search within generation response"""
+    matches: List[SearchMatch]
+    total_matches: int
+    files_searched: int
+    query: str
+    execution_time: float
+
+
+class GitHubDeploymentRequest(BaseModel):
+    """GitHub deployment request schema"""
+    repo_name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    private: bool = True
+    github_token: str = Field(..., min_length=1)
+    branch_name: str = "main"
+    commit_message: str = "Initial deployment from CodebeGen"
+    include_ci_cd: bool = False
+    deployment_type: str = Field(default="repository", description="repository, pages, vercel")
+
+
+class GitHubDeploymentResponse(BaseModel):
+    """GitHub deployment response"""
+    success: bool
+    repository_url: str
+    clone_url: str
+    deployment_url: Optional[str] = None
+    branch: str
+    commit_sha: Optional[str] = None
+    ci_cd_configured: bool = False
+    message: str
+
+
+class GenerationComparisonRequest(BaseModel):
+    """Generation comparison request"""
+    include_content: bool = True
+    comparison_type: str = Field(default="diff", description="diff, structure, metrics")
+
+
+class FileComparison(BaseModel):
+    """File comparison result"""
+    path: str
+    status: str = Field(..., description="added, removed, modified, unchanged")
+    size_change: Optional[int] = None
+    content_diff: Optional[str] = None
+    changes_summary: Optional[str] = None
+
+
+class GenerationComparisonResponse(BaseModel):
+    """Generation comparison response"""
+    generation_1_id: str
+    generation_2_id: str
+    comparison_summary: Dict[str, Any]
+    file_comparisons: List[FileComparison]
+    metrics_comparison: Dict[str, Any]
+    recommendations: List[str]
