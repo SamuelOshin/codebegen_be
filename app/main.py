@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.exceptions import setup_exception_handlers
-from app.routers import auth, projects, generations, ai, webhooks, ab_testing, unified_generation
+from app.routers import auth, projects, generations, ai, webhooks, ab_testing, unified_generation, templates
 from app.services.ai_orchestrator import ai_orchestrator, AIOrchestrator
 
 # Rate limiting
@@ -45,6 +45,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(projects.router, prefix="/projects", tags=["Projects"])
+app.include_router(templates.router, prefix="/templates", tags=["Templates"])
 
 # Unified Generation Router (Recommended)
 app.include_router(unified_generation.router, prefix="/api/v2/generation", tags=["Generation (Unified)"])

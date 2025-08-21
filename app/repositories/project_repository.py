@@ -213,3 +213,63 @@ class ProjectRepository(BaseRepository[Project]):
         """Update project's last activity timestamp"""
         from datetime import datetime
         await self.update(project_id, updated_at=datetime.utcnow())
+    
+    async def get_user_project_stats(self, user_id: str) -> Dict[str, Any]:
+        """Get user project statistics for dashboard"""
+        # Get basic project counts
+        total_projects_stmt = select(func.count(Project.id)).where(Project.user_id == user_id)
+        active_projects_stmt = select(func.count(Project.id)).where(
+            and_(Project.user_id == user_id, Project.status == "active")
+        )
+        completed_projects_stmt = select(func.count(Project.id)).where(
+            and_(Project.user_id == user_id, Project.status == "completed")
+        )
+        draft_projects_stmt = select(func.count(Project.id)).where(
+            and_(Project.user_id == user_id, Project.status == "draft")
+        )
+        public_projects_stmt = select(func.count(Project.id)).where(
+            and_(Project.user_id == user_id, Project.is_public == True)
+        )
+        private_projects_stmt = select(func.count(Project.id)).where(
+            and_(Project.user_id == user_id, Project.is_public == False)
+        )
+        
+        # Execute count queries
+        total_projects = (await self.db.execute(total_projects_stmt)).scalar() or 0
+        active_projects = (await self.db.execute(active_projects_stmt)).scalar() or 0
+        completed_projects = (await self.db.execute(completed_projects_stmt)).scalar() or 0
+        draft_projects = (await self.db.execute(draft_projects_stmt)).scalar() or 0
+        public_projects = (await self.db.execute(public_projects_stmt)).scalar() or 0
+        private_projects = (await self.db.execute(private_projects_stmt)).scalar() or 0
+        
+        # Get projects by domain
+        domain_stats_stmt = (
+            select(Project.domain, func.count(Project.id))
+            .where(and_(Project.user_id == user_id, Project.domain.isnot(None)))
+            .group_by(Project.domain)
+        )
+        domain_result = await self.db.execute(domain_stats_stmt)
+        projects_by_domain = {domain: count for domain, count in domain_result.fetchall()}
+        
+        # Get projects by tech stack (simplified - count occurrences of each tech)
+        projects_stmt = select(Project.tech_stack).where(
+            and_(Project.user_id == user_id, Project.tech_stack.isnot(None))
+        )
+        projects_result = await self.db.execute(projects_stmt)
+        
+        tech_stack_count = {}
+        for (tech_stack,) in projects_result.fetchall():
+            if tech_stack:
+                for tech in tech_stack:
+                    tech_stack_count[tech] = tech_stack_count.get(tech, 0) + 1
+        
+        return {
+            "total_projects": total_projects,
+            "active_projects": active_projects,
+            "completed_projects": completed_projects,
+            "draft_projects": draft_projects,
+            "public_projects": public_projects,
+            "private_projects": private_projects,
+            "projects_by_domain": projects_by_domain,
+            "projects_by_tech_stack": tech_stack_count
+        }

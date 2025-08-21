@@ -110,3 +110,57 @@ class ProjectStatsResponse(BaseModel):
     private_projects: int
     projects_by_domain: Dict[str, int]
     projects_by_tech_stack: Dict[str, int]
+
+
+class ProjectValidationRequest(BaseModel):
+    """Project validation request schema"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    domain: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    constraints: Optional[Dict[str, Any]] = None
+
+
+class ValidationIssue(BaseModel):
+    """Individual validation issue"""
+    field: str
+    message: str
+    severity: str = Field(..., description="error, warning, info")
+    suggestion: Optional[str] = None
+
+
+class ProjectValidationResponse(BaseModel):
+    """Project validation response schema"""
+    is_valid: bool
+    issues: List[ValidationIssue] = []
+    suggestions: List[str] = []
+    estimated_complexity: str = Field(..., description="low, medium, high")
+    estimated_duration: Optional[str] = None
+
+
+class FilePreview(BaseModel):
+    """File preview in project structure"""
+    path: str
+    type: str = Field(..., description="file, directory")
+    size_estimate: Optional[int] = None
+    description: Optional[str] = None
+
+
+class ProjectPreviewRequest(BaseModel):
+    """Project preview request schema"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    domain: Optional[str] = None
+    tech_stack: Optional[List[str]] = None
+    constraints: Optional[Dict[str, Any]] = None
+    template_name: Optional[str] = None
+
+
+class ProjectPreviewResponse(BaseModel):
+    """Project preview response schema"""
+    project_structure: List[FilePreview]
+    estimated_files: int
+    estimated_lines: int
+    technologies_used: List[str]
+    features_included: List[str]
+    setup_instructions: List[str]

@@ -155,3 +155,39 @@ class IterationRequest(BaseModel):
                                    description="Description of modifications to make")
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context for iteration")
     generation_mode: GenerationMode = Field(GenerationMode.AUTO, description="Force specific generation mode")
+
+
+class UnifiedGenerationUpdate(BaseModel):
+    """Update schema matching unified generation system"""
+    name: Optional[str] = Field(None, max_length=255, description="Display name for the generation")
+    description: Optional[str] = Field(None, max_length=1000, description="Description of the generation")
+    tags: Optional[List[str]] = Field(None, description="Tags for organization and search")
+    
+    # Preserve unified generation context
+    context: Optional[Dict[str, Any]] = Field(None, description="Additional context metadata")
+    
+    # Metadata updates
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    
+    @validator('context')
+    def validate_context_preservation(cls, v):
+        """Ensure context updates don't break generation integrity"""
+        if v and 'generation_mode' in v:
+            raise ValueError("Cannot modify generation_mode after creation")
+        return v
+
+
+class GenerationDeletionRequest(BaseModel):
+    """Request schema for generation deletion with cascade options"""
+    cascade_files: bool = Field(True, description="Delete associated files and artifacts")
+    cascade_metrics: bool = Field(True, description="Delete AB testing metrics and analytics")
+    cascade_iterations: bool = Field(False, description="Delete all child iterations")
+    force_delete: bool = Field(False, description="Force delete even if generation is processing")
+    deletion_reason: Optional[str] = Field(None, description="Reason for deletion (for audit)")
+    
+    @validator('deletion_reason')
+    def validate_reason_for_force_delete(cls, v, values):
+        """Require reason when force deleting"""
+        if values.get('force_delete') and not v:
+            raise ValueError("deletion_reason is required when force_delete=True")
+        return v
