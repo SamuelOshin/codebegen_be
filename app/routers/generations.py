@@ -4,12 +4,14 @@ Generations router for AI-powered code generation endpoints.
 
 import asyncio
 import json
-from typing import List, Optional
+import logging
+import time
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-import logging
+from datetime import datetime
 
 from app.core.database import get_async_db
 from app.auth.dependencies import get_current_user, get_current_user_optional
@@ -51,7 +53,9 @@ from app.schemas.unified_generation import (
     UnifiedGenerationResponse, 
     GenerationMode,
     StreamingProgressEvent,
-    IterationRequest
+    IterationRequest,
+    UnifiedGenerationUpdate,
+    GenerationDeletionRequest
 )
 from app.schemas.user import UserResponse
 from app.services.generation_feature_flag import generation_feature_flag
@@ -1032,19 +1036,21 @@ async def get_generation(
 
 @router.patch(
     "/{generation_id}",
-    response_model=GenerationResponse,
-    summary="Update generation",
-    description="Update generation details (limited fields)"
+    response_model=UnifiedGenerationResponse,
+    summary="Update generation metadata",
+    description="Update generation metadata while preserving unified generation context"
 )
 async def update_generation(
     generation_id: str,
-    generation_update: GenerationUpdate,
+    generation_update: UnifiedGenerationUpdate,
     current_user: UserResponse = Depends(get_current_user),
+    enhanced_service=Depends(get_enhanced_generation_service),
     db: AsyncSession = Depends(get_async_db)
 ):
-    """Update a generation"""
+    """Update generation with unified generation service integration"""
     generation_repo = GenerationRepository(db)
     
+    # Verify generation exists and access
     generation = await generation_repo.get_by_id(generation_id)
     if not generation:
         raise HTTPException(
@@ -1058,27 +1064,118 @@ async def update_generation(
             detail="You don't have permission to update this generation"
         )
     
-    # Update only allowed fields
-    update_data = generation_update.dict(exclude_unset=True)
-    updated_generation = await generation_repo.update(generation_id, update_data)
+    # Prevent updates to processing generations
+    if generation.status in ["pending", "processing"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot update generation while it's being processed"
+        )
     
-    return GenerationResponse.from_orm(updated_generation)
+    try:
+        # Get generation config to maintain context
+        generation_config = generation_feature_flag.get_generation_config(
+            user_id=current_user.id,
+            requested_mode=GenerationMode.AUTO,
+            is_iteration=generation.is_iteration or False,
+            project_id=generation.project_id
+        )
+        
+        # Prepare update data
+        update_data = generation_update.dict(exclude_unset=True)
+        
+        # Preserve critical unified context
+        if generation.context and 'generation_mode' in generation.context:
+            if 'context' not in update_data:
+                update_data['context'] = {}
+            update_data['context']['generation_mode'] = generation.context['generation_mode']
+            update_data['context']['ab_group'] = generation.context.get('ab_group')
+            update_data['context']['enhanced_features'] = generation.context.get('enhanced_features')
+        
+        # Update generation with validation
+        updated_generation = await generation_repo.update(generation_id, update_data)
+        
+        # Record update metrics if enabled
+        if generation_config.use_metrics_tracking:
+            validation_metrics.track_generation_update(
+                generation_id=generation_id,
+                user_id=current_user.id,
+                update_fields=list(update_data.keys()),
+                success=True
+            )
+        
+        # Log successful update
+        logger.info(f"Generation {generation_id} updated by user {current_user.id}")
+        
+        # Convert to unified response format
+        return UnifiedGenerationResponse(
+            generation_id=updated_generation.id,
+            status=updated_generation.status,
+            message="Generation updated successfully",
+            user_id=updated_generation.user_id,
+            project_id=updated_generation.project_id,
+            prompt=updated_generation.prompt,
+            context=updated_generation.context or {},
+            files=updated_generation.output_files,
+            quality_score=updated_generation.quality_score,
+            generation_mode=GenerationMode(updated_generation.context.get('generation_mode', 'auto')),
+            ab_group=updated_generation.context.get('ab_group'),
+            enhanced_features=updated_generation.context.get('enhanced_features'),
+            created_at=updated_generation.created_at,
+            updated_at=updated_generation.updated_at,
+            is_iteration=updated_generation.is_iteration or False,
+            parent_generation_id=updated_generation.parent_generation_id
+        )
+        
+    except ValueError as e:
+        logger.warning(f"Generation update validation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Generation update failed for {generation_id}: {e}")
+        
+        # Record failure metrics
+        generation_config = generation_feature_flag.get_generation_config(
+            user_id=current_user.id,
+            requested_mode=GenerationMode.AUTO
+        )
+        if generation_config.use_metrics_tracking:
+            validation_metrics.track_generation_update(
+                generation_id=generation_id,
+                user_id=current_user.id,
+                update_fields=list(generation_update.dict(exclude_unset=True).keys()),
+                success=False,
+                errors=[str(e)]
+            )
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Update failed"
+        )
 
 
 @router.delete(
     "/{generation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete generation",
-    description="Delete a generation and its artifacts"
+    summary="Delete generation with cascade cleanup",
+    description="Delete generation and associated artifacts with proper cleanup"
 )
 async def delete_generation(
     generation_id: str,
+    cascade_files: bool = Query(True, description="Delete associated files and artifacts"),
+    cascade_metrics: bool = Query(True, description="Delete AB testing metrics"),
+    cascade_iterations: bool = Query(False, description="Delete all child iterations"),
+    force_delete: bool = Query(False, description="Force delete even if processing"),
+    deletion_reason: Optional[str] = Query(None, description="Reason for deletion"),
     current_user: UserResponse = Depends(get_current_user),
+    enhanced_service=Depends(get_enhanced_generation_service),
     db: AsyncSession = Depends(get_async_db)
 ):
-    """Delete a generation"""
+    """Delete generation with comprehensive cleanup"""
     generation_repo = GenerationRepository(db)
     
+    # Verify generation exists and access
     generation = await generation_repo.get_by_id(generation_id)
     if not generation:
         raise HTTPException(
@@ -1092,7 +1189,128 @@ async def delete_generation(
             detail="You don't have permission to delete this generation"
         )
     
-    await generation_repo.delete(generation_id)
+    # Validate force delete reason
+    if force_delete and not deletion_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="deletion_reason is required when force_delete=true"
+        )
+    
+    # Prevent deletion of processing generations unless forced
+    if generation.status in ["pending", "processing"] and not force_delete:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete generation while it's being processed. Use force_delete=true to override."
+        )
+    
+    # Check for dependent iterations
+    iterations = await generation_repo.get_iterations(generation_id)
+    if iterations and not cascade_iterations:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Generation has {len(iterations)} iterations. Use cascade_iterations=true to delete all."
+        )
+    
+    try:
+        # Get generation config for metrics
+        generation_config = generation_feature_flag.get_generation_config(
+            user_id=current_user.id,
+            requested_mode=GenerationMode.AUTO
+        )
+        
+        # Track cascade operations
+        cascade_operations = []
+        
+        # Delete iterations if requested
+        if cascade_iterations and iterations:
+            for iteration in iterations:
+                await generation_repo.delete(iteration.id)
+                cascade_operations.append(f"deleted_iteration_{iteration.id}")
+        
+        # Delete associated files if requested
+        if cascade_files:
+            try:
+                await file_manager.delete_generation_files(generation_id)
+                cascade_operations.append("deleted_files")
+            except Exception as e:
+                logger.warning(f"Failed to delete files for generation {generation_id}: {e}")
+                if not force_delete:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to delete associated files. Use force_delete=true to ignore."
+                    )
+                cascade_operations.append("failed_file_deletion")
+        
+        # Delete metrics if requested
+        if cascade_metrics and generation_config.use_metrics_tracking:
+            try:
+                # Clean up metrics from AB testing system
+                validation_metrics.delete_generation_metrics(generation_id)
+                cascade_operations.append("deleted_metrics")
+            except Exception as e:
+                logger.warning(f"Failed to delete metrics for generation {generation_id}: {e}")
+                # Don't fail the deletion for metrics cleanup failure
+                cascade_operations.append("failed_metrics_deletion")
+        
+        # Delete generation record
+        await generation_repo.delete(generation_id)
+        cascade_operations.append("deleted_generation")
+        
+        # Clean up streaming events
+        if generation_id in generation_events:
+            del generation_events[generation_id]
+            cascade_operations.append("cleaned_streaming_events")
+        
+        # Record deletion metrics before final cleanup
+        if generation_config.use_metrics_tracking:
+            try:
+                validation_metrics.track_generation_deletion(
+                    generation_id=generation_id,
+                    user_id=current_user.id,
+                    deletion_reason=deletion_reason,
+                    cascade_operations=cascade_operations,
+                    success=True
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record deletion metrics: {e}")
+        
+        logger.info(f"Generation {generation_id} deleted successfully by user {current_user.id}. "
+                   f"Operations: {', '.join(cascade_operations)}")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except ValueError as e:
+        logger.warning(f"Generation deletion validation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Generation deletion failed for {generation_id}: {e}")
+        
+        # Record failure metrics
+        generation_config = generation_feature_flag.get_generation_config(
+            user_id=current_user.id,
+            requested_mode=GenerationMode.AUTO
+        )
+        if generation_config.use_metrics_tracking:
+            try:
+                validation_metrics.track_generation_deletion(
+                    generation_id=generation_id,
+                    user_id=current_user.id,
+                    deletion_reason=deletion_reason,
+                    cascade_operations=[],
+                    success=False,
+                    errors=[str(e)]
+                )
+            except Exception as metrics_error:
+                logger.warning(f"Failed to record deletion failure metrics: {metrics_error}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Deletion failed"
+        )
 
 
 @router.post(
