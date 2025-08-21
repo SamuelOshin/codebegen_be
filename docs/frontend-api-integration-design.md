@@ -14,6 +14,51 @@ This document outlines the complete frontend API integration strategy for CodeBE
 3. **Configuration** (Step 2/3) → Project Creation & Validation APIs
 4. **Code Generation** (Step 3/3) → Unified Generation Router & File Management
 
+### 🔄 Data Flow Between Steps
+
+**Critical Integration Pattern**: Each step preserves and builds upon data from previous steps:
+
+```typescript
+// Step 1: Template Selection
+const selectedTemplate = {
+  name: "fastapi_sqlalchemy",
+  display_name: "FastAPI with SQLAlchemy",
+  tech_stack: ["fastapi", "postgresql", "sqlalchemy"]
+};
+
+// Step 2: Configuration (preserves template + adds config)
+const projectConfig = {
+  name: "My E-commerce API",
+  domain: "ecommerce",
+  tech_stack: selectedTemplate.tech_stack,  // Inherited from Step 1
+  settings: {
+    selected_template: selectedTemplate.name,  // ⭐ Template preserved
+    features: ["authentication", "crud", "testing"],
+    data_models: [/* user-defined models */],
+    api_endpoints: [/* user-defined endpoints */]
+  }
+};
+
+// Step 3: Generation (combines all previous data)
+const generationRequest = {
+  prompt: "Create an e-commerce API with user management",
+  project_id: projectConfig.id,               // Links to saved project
+  context: {
+    project_config: projectConfig,            // ⭐ Complete config from Step 2
+    selected_template: selectedTemplate.name, // ⭐ Template from Step 1
+    user_preferences: userCustomizations      // Additional customizations
+  },
+  tech_stack: projectConfig.tech_stack,       // Derived from template
+  domain: projectConfig.domain,               // From configuration
+  generation_mode: "enhanced"
+};
+```
+
+**Key Integration Points:**
+- 🔗 **Template → Configuration**: Template choice influences available features and tech stack options
+- 🔗 **Configuration → Generation**: Project config becomes generation context
+- 🔗 **Preservation**: Both template and configuration data are preserved in the final generation request
+
 ---
 
 ## 🔐 Authentication Flow
@@ -109,7 +154,7 @@ class LandingPageService {
 interface TemplateSelection {
   // Get available templates
   load_templates: {
-    endpoint: 'GET /generations/templates'
+    endpoint: 'GET /templates/'
     purpose: 'Load all available project templates with metadata'
     response: {
       templates: Array<{
@@ -117,27 +162,22 @@ interface TemplateSelection {
         display_name: string           // "FastAPI Basic"
         description: string            // Human readable description
         tech_stack: string[]          // ["fastapi", "postgresql", "sqlalchemy"]
-        domain_compatibility: string[] // ["general", "ecommerce", "social_media"]
-        features: string[]             // ["authentication", "crud", "testing"]
-        complexity_level: "basic" | "intermediate" | "advanced"
-        rating: number                 // Community rating
-        preview_image?: string         // Template preview/icon
-        estimated_generation_time: number // In seconds
       }>
     }
   }
   
   // Search and filter templates
   search_templates: {
-    endpoint: 'GET /generations/templates/search'
+    endpoint: 'GET /templates/search'
     query_params: {
-      q?: string                     // Search query
+      query?: string                 // Search query (min 2, max 100 chars)
       domain?: string               // Filter by domain
       tech_stack?: string[]         // Filter by tech stack
-      complexity?: string           // Filter by complexity
+      complexity?: string           // Filter by complexity (low, medium, high)
       features?: string[]           // Filter by features
     }
     purpose: 'Enable template search and filtering'
+    response_model: 'TemplateSearchResponse'
   }
 }
 ```
@@ -145,18 +185,32 @@ interface TemplateSelection {
 ### Frontend Implementation
 ```typescript
 class TemplateSelectionService {
-  async loadTemplates(filters?: TemplateFilters): Promise<Template[]> {
-    const params = new URLSearchParams();
-    if (filters?.domain) params.append('domain', filters.domain);
-    if (filters?.tech_stack) filters.tech_stack.forEach(stack => params.append('tech_stack', stack));
-    
-    const response = await this.apiClient.get(`/generations/templates?${params}`);
+  async loadTemplates(): Promise<Template[]> {
+    const response = await this.apiClient.get('/templates/');
     return response.data.templates;
   }
   
-  async searchTemplates(query: string): Promise<Template[]> {
-    const response = await this.apiClient.get(`/generations/templates/search?q=${encodeURIComponent(query)}`);
-    return response.data.templates;
+  async searchTemplates(searchParams: {
+    query?: string;
+    domain?: string;
+    tech_stack?: string[];
+    complexity?: string;
+    features?: string[];
+  }): Promise<TemplateSearchResponse> {
+    const params = new URLSearchParams();
+    
+    if (searchParams.query) params.append('query', searchParams.query);
+    if (searchParams.domain) params.append('domain', searchParams.domain);
+    if (searchParams.tech_stack) {
+      searchParams.tech_stack.forEach(stack => params.append('tech_stack', stack));
+    }
+    if (searchParams.complexity) params.append('complexity', searchParams.complexity);
+    if (searchParams.features) {
+      searchParams.features.forEach(feature => params.append('features', feature));
+    }
+    
+    const response = await this.apiClient.get(`/templates/search?${params}`);
+    return response.data;
   }
 }
 ```
@@ -377,21 +431,36 @@ interface CodeGenerationFlow {
 ```typescript
 class GenerationService {
   async startGeneration(config: GenerationConfig): Promise<GenerationResponse> {
+    // Build context from previous steps
+    const generationContext = {
+      project_config: config.project_config,     // Complete config from Step 2
+      selected_template: config.selected_template, // Template from Step 1
+      user_preferences: config.user_preferences   // Any additional customizations
+    };
+    
     const response = await this.apiClient.post('/api/v2/generation/generate', {
       prompt: this.buildPromptFromConfig(config),
-      tech_stack: config.tech_stack,
-      domain: config.domain,
-      context: {
-        project_config: config.project_config,
-        selected_template: config.selected_template,
-        user_preferences: config.user_preferences
-      },
+      tech_stack: config.tech_stack,              // Derived from template
+      domain: config.domain,                      // From configuration
+      context: generationContext,                 // ⭐ Combined data from all steps
       constraints: config.constraints,
       generation_mode: "enhanced",
-      project_id: config.project_id
+      project_id: config.project_id               // Links to saved project
     });
     
     return response.data;
+  }
+  
+  // Helper to build enhanced prompt from template + config
+  private buildPromptFromConfig(config: GenerationConfig): string {
+    const template = config.selected_template;
+    const features = config.project_config.settings.features;
+    const models = config.project_config.settings.data_models;
+    
+    return `Generate a ${config.domain} project using ${template} template. 
+            Include features: ${features.join(', ')}.
+            Data models: ${models.map(m => m.name).join(', ')}.
+            ${config.prompt}`;
   }
   
   // Server-Sent Events for real-time progress
