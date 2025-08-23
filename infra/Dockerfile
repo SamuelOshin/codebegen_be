@@ -1,7 +1,7 @@
 # Multi-stage Docker build for production deployment
 # Optimized for AI model loading and FastAPI serving
 
-FROM python:3.11-slim as base
+FROM python:3.11.9-slim as base
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
