@@ -25,6 +25,8 @@ COPY ai_models/ ai_models/
 COPY templates/ templates/
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app
@@ -42,4 +44,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
