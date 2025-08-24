@@ -22,9 +22,13 @@ COPY requirements.render.txt /app/requirements.render.txt
 RUN python -m pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.render.txt
 
-# Create non-root user and fix permissions
+# Copy entrypoint and make executable (do this while still root)
+COPY infra/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create non-root user and fix permissions (also chown the entrypoint)
 RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /usr/local/bin/docker-entrypoint.sh
 USER appuser
 
 EXPOSE 8000
@@ -32,10 +36,6 @@ EXPOSE 8000
 # Healthcheck for Render
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
-
-# Copy entrypoint and make executable
-COPY infra/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Use entrypoint so migrations run before the app starts
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
