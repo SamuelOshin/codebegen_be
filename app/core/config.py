@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     HF_TOKEN: Optional[str] = None
     HUGGINGFACE_API_KEY: Optional[str] = Field(None, alias="HF_TOKEN")  # Alias for compatibility
     
+    # Google Gemini API
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL_NAME: str = "gemini-2.5-pro"  # Model to use for generation
+    USE_GEMINI: bool = False  # Enable/disable Gemini as primary generator
+    
     # AI Model Configuration
     MAX_NEW_TOKENS: int = 4096
     TEMPERATURE: float = 0.7

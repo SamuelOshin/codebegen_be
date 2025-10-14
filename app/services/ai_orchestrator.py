@@ -452,19 +452,35 @@ class AIOrchestrator:
             }
 
     async def _generate_code(self, generation_data: dict, schema: Dict[str, Any]) -> Dict[str, str]:
-        """Generate code files using Qwen model"""
+        """Generate code files using Qwen model or Gemini if enabled"""
         try:
-            qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
-            
-            prompt = generation_data.get("prompt", "")
-            context = {
-                "domain": generation_data.get("domain", "general"),
-                "tech_stack": generation_data.get("tech_stack", "fastapi_postgres"),
-                "constraints": generation_data.get("constraints", [])
-            }
-            
-            files = await qwen_generator.generate_project(prompt, schema, context)
-            return files
+            # Check if Gemini should be used
+            if settings.USE_GEMINI:
+                print("Using Gemini for code generation")
+                gemini_generator = await model_loader.get_model(ModelType.GEMINI_GENERATOR)
+                
+                prompt = generation_data.get("prompt", "")
+                context = {
+                    "domain": generation_data.get("domain", "general"),
+                    "tech_stack": generation_data.get("tech_stack", "fastapi_postgres"),
+                    "constraints": generation_data.get("constraints", [])
+                }
+                
+                files = await gemini_generator.generate_project(prompt, schema, context)
+                return files
+            else:
+                # Use Qwen (existing logic)
+                qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
+                
+                prompt = generation_data.get("prompt", "")
+                context = {
+                    "domain": generation_data.get("domain", "general"),
+                    "tech_stack": generation_data.get("tech_stack", "fastapi_postgres"),
+                    "constraints": generation_data.get("constraints", [])
+                }
+                
+                files = await qwen_generator.generate_project(prompt, schema, context)
+                return files
             
         except Exception as e:
             print(f"Error in code generation: {e}")
@@ -974,38 +990,76 @@ Returns a specific user
     ) -> Dict[str, str]:
         """Generate code using enhanced prompts and architecture planning"""
         try:
-            qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
-            
-            # Use enhanced architecture and implementation prompts if available
-            if enhanced_prompts:
-                if "architecture_planning" in enhanced_prompts:
-                    architecture_prompt = enhanced_prompts["architecture_planning"]
-                    print("Using enhanced architecture planning prompt")
-                else:
-                    architecture_prompt = generation_data.get("prompt", "")
+            # Check if Gemini should be used
+            if settings.USE_GEMINI:
+                gemini_generator = await model_loader.get_model(ModelType.GEMINI_GENERATOR)
                 
-                if "implementation_generation" in enhanced_prompts:
-                    implementation_prompt = enhanced_prompts["implementation_generation"]
-                    print("Using enhanced implementation generation prompt")
+                # Use enhanced architecture and implementation prompts if available
+                if enhanced_prompts:
+                    if "architecture_planning" in enhanced_prompts:
+                        architecture_prompt = enhanced_prompts["architecture_planning"]
+                        print("Using enhanced architecture planning prompt with Gemini")
+                    else:
+                        architecture_prompt = generation_data.get("prompt", "")
+                    
+                    if "implementation_generation" in enhanced_prompts:
+                        implementation_prompt = enhanced_prompts["implementation_generation"]
+                        print("Using enhanced implementation generation prompt with Gemini")
+                    else:
+                        implementation_prompt = generation_data.get("prompt", "")
+                    
+                    # Generate with enhanced context
+                    files = await gemini_generator.generate_project_enhanced(
+                        architecture_prompt=architecture_prompt,
+                        implementation_prompt=implementation_prompt,
+                        schema=schema,
+                        domain=generation_data.get("domain", "general"),
+                        tech_stack=generation_data.get("tech_stack", "fastapi_postgres")
+                    )
                 else:
-                    implementation_prompt = generation_data.get("prompt", "")
-                
-                # Generate with enhanced context
-                files = await qwen_generator.generate_project_enhanced(
-                    architecture_prompt=architecture_prompt,
-                    implementation_prompt=implementation_prompt,
-                    schema=schema,
-                    domain=generation_data.get("domain", "general"),
-                    tech_stack=generation_data.get("tech_stack", "fastapi_postgres")
-                )
+                    # Fallback to basic generation
+                    files = await gemini_generator.generate_project(
+                        generation_data.get("prompt", ""),
+                        schema,
+                        {
+                            "domain": generation_data.get("domain", "general"),
+                            "tech_stack": generation_data.get("tech_stack", "fastapi_postgres")
+                        }
+                    )
             else:
-                # Fallback to basic generation
-                files = await qwen_generator.generate_project(
-                    generation_data.get("prompt", ""),
-                    schema,
-                    generation_data.get("domain", "general"),
-                    generation_data.get("tech_stack", "fastapi_postgres")
-                )
+                # Use Qwen (existing logic)
+                qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
+                
+                # Use enhanced architecture and implementation prompts if available
+                if enhanced_prompts:
+                    if "architecture_planning" in enhanced_prompts:
+                        architecture_prompt = enhanced_prompts["architecture_planning"]
+                        print("Using enhanced architecture planning prompt")
+                    else:
+                        architecture_prompt = generation_data.get("prompt", "")
+                    
+                    if "implementation_generation" in enhanced_prompts:
+                        implementation_prompt = enhanced_prompts["implementation_generation"]
+                        print("Using enhanced implementation generation prompt")
+                    else:
+                        implementation_prompt = generation_data.get("prompt", "")
+                    
+                    # Generate with enhanced context
+                    files = await qwen_generator.generate_project_enhanced(
+                        architecture_prompt=architecture_prompt,
+                        implementation_prompt=implementation_prompt,
+                        schema=schema,
+                        domain=generation_data.get("domain", "general"),
+                        tech_stack=generation_data.get("tech_stack", "fastapi_postgres")
+                    )
+                else:
+                    # Fallback to basic generation
+                    files = await qwen_generator.generate_project(
+                        generation_data.get("prompt", ""),
+                        schema,
+                        generation_data.get("domain", "general"),
+                        generation_data.get("tech_stack", "fastapi_postgres")
+                    )
             
             # Add enhancement metadata
             if enhanced_prompts:
@@ -1013,7 +1067,8 @@ Returns a specific user
                     "enhanced_generation": True,
                     "prompts_used": list(enhanced_prompts.keys()),
                     "generation_timestamp": time.time(),
-                    "enhancement_version": "2.0"
+                    "enhancement_version": "2.0",
+                    "generator": "gemini" if settings.USE_GEMINI else "qwen"
                 }, indent=2)
             
             return files

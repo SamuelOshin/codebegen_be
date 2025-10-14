@@ -22,6 +22,7 @@ from .qwen_generator import QwenGenerator
 from .llama_parser import LlamaParser
 from .starcoder_reviewer import StarcoderReviewer
 from .mistral_docs import MistralDocsGenerator
+from .gemini_generator import GeminiGenerator
 
 
 class ModelType(Enum):
@@ -29,6 +30,7 @@ class ModelType(Enum):
     LLAMA_PARSER = "llama_parser"
     STARCODER_REVIEWER = "starcoder_reviewer"
     MISTRAL_DOCS = "mistral_docs"
+    GEMINI_GENERATOR = "gemini_generator"
 
 
 @dataclass
@@ -69,6 +71,10 @@ class ModelLoader:
             ModelType.MISTRAL_DOCS: ModelInfo(
                 model_type=ModelType.MISTRAL_DOCS,
                 model_path=settings.MISTRAL_MODEL_PATH
+            ),
+            ModelType.GEMINI_GENERATOR: ModelInfo(
+                model_type=ModelType.GEMINI_GENERATOR,
+                model_path=settings.GEMINI_MODEL_NAME
             )
         }
 
@@ -106,6 +112,8 @@ class ModelLoader:
                 model_info.instance = StarcoderReviewer(model_info.model_path)
             elif model_type == ModelType.MISTRAL_DOCS:
                 model_info.instance = MistralDocsGenerator(model_info.model_path)
+            elif model_type == ModelType.GEMINI_GENERATOR:
+                model_info.instance = GeminiGenerator(model_info.model_path)
             
             # Load the model
             await model_info.instance.load()
@@ -175,7 +183,8 @@ class ModelLoader:
             ModelType.QWEN_GENERATOR: 32.0,  # 32B parameters
             ModelType.LLAMA_PARSER: 8.0,     # 8B parameters
             ModelType.STARCODER_REVIEWER: 15.0,  # 15B parameters
-            ModelType.MISTRAL_DOCS: 7.0      # 7B parameters
+            ModelType.MISTRAL_DOCS: 7.0,      # 7B parameters
+            ModelType.GEMINI_GENERATOR: 0.1   # API-based, minimal local memory
         }
         return memory_estimates.get(model_type, 5.0)
 
