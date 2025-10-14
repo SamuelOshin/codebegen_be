@@ -476,15 +476,18 @@ async def _process_enhanced_generation(
         else:
             # Use AI orchestrator directly
             generation_result = await ai_orchestrator.process_generation(
-                prompt=enhanced_prompt,
-                context={
-                    **request.context,
-                    "tech_stack": request.tech_stack or "fastapi_postgres",
-                    "domain": request.domain,
-                    "constraints": request.constraints
-                },
-                user_id=user_id,
-                generation_id=generation_id
+                generation_id,
+                {
+                    "prompt": enhanced_prompt,
+                    "context": {
+                        **request.context,
+                        "tech_stack": request.tech_stack or "fastapi_postgres",
+                        "domain": request.domain,
+                        "constraints": request.constraints
+                    },
+                    "user_id": user_id,
+                    "use_enhanced_prompts": False
+                }
             )
         
         await _emit_event(generation_id, {

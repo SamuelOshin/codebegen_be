@@ -4,11 +4,16 @@ SQLAlchemy model for user accounts and profiles.
 Handles authentication, preferences, and user data.
 """
 
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import String, Boolean, Text, JSON, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
+
+
+if TYPE_CHECKING:
+    from .project import Project
+    from .generation import Generation
 
 
 class User(BaseModel):
