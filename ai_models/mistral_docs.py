@@ -24,7 +24,7 @@ class MistralDocsGenerator:
         self.model_path = model_path
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[AutoModelForCausalLM] = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if (TRANSFORMERS_AVAILABLE and torch.cuda.is_available()) else "cpu"
 
     async def load(self):
         """Load Mistral model for documentation generation"""
@@ -33,16 +33,20 @@ class MistralDocsGenerator:
 
     def _load_model(self):
         """Synchronous model loading"""
+        if not TRANSFORMERS_AVAILABLE:
+            print("Cannot load MistralDocsGenerator model - transformers not available")
+            return
+
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_path, 
+            self.model_path,
             trust_remote_code=True,
             use_fast=True
         )
-        
+
         # Set pad token if not present
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
+
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             device_map="auto",

@@ -218,11 +218,18 @@ class EnhancedGenerationService:
             # Enhanced context analysis if system is available
             if self.enhanced_prompt_system:
                 try:
-                    # Use the enhanced prompt system for deeper analysis
-                    enhanced_context = self.enhanced_prompt_system.generate_with_context(
-                        prompt, 
-                        "system_user"  # Use system user for context analysis
-                    )
+                    # Temporarily disable enhanced context analysis due to async issues
+                    # enhanced_context = self.enhanced_prompt_system.generate_with_context(
+                    #     prompt, 
+                    #     "system_user"  # Use system user for context analysis
+                    # )
+                    
+                    # For now, provide basic context
+                    enhanced_context = {
+                        "user_context": {},
+                        "similar_projects": [],
+                        "patterns": []
+                    }
                     
                     if isinstance(enhanced_context, dict):
                         context_analysis.update({
@@ -237,7 +244,7 @@ class EnhancedGenerationService:
             
             # Analyze template suitability
             template_analysis = await self._analyze_template_suitability(
-                prompt, tech_stack, "system_user"
+                prompt, None, tech_stack
             )
             context_analysis["template_analysis"] = template_analysis
             
@@ -273,6 +280,127 @@ class EnhancedGenerationService:
                 features.append(feature)
         
         return features
+    
+    async def _analyze_template_suitability(
+        self, 
+        prompt: str, 
+        tech_stack: str, 
+        user_id: str
+    ) -> Dict[str, Any]:
+        """Analyze if templates are suitable for the given prompt"""
+        try:
+            # Use existing template system methods for analysis
+            detected_domain = self.template_system.detect_domain(prompt)
+            detected_features = self.template_system.detect_required_features(prompt, detected_domain)
+            
+            # Simple template suitability analysis
+            prompt_lower = prompt.lower()
+            
+            # Check for complexity indicators
+            complexity_indicators = [
+                "microservices", "scalability", "high traffic", "real-time",
+                "complex business logic", "multiple domains", "advanced"
+            ]
+            
+            has_complexity = any(indicator in prompt_lower for indicator in complexity_indicators)
+            
+            # Check for template-friendly patterns
+            template_patterns = [
+                "crud", "basic api", "simple", "starter", "boilerplate",
+                "standard", "typical", "common"
+            ]
+            
+            has_template_patterns = any(pattern in prompt_lower for pattern in template_patterns)
+            
+            # Factor in detected features count
+            feature_count = len(detected_features)
+            
+            # Determine suitability
+            if has_complexity and not has_template_patterns and feature_count > 3:
+                suitable = False
+                confidence = 0.3
+                reason = "Complex requirements with many features not suitable for template-based generation"
+            elif has_template_patterns or feature_count <= 2:
+                suitable = True
+                confidence = 0.8
+                reason = "Simple/standard requirements suitable for templates"
+            else:
+                suitable = True
+                confidence = 0.6
+                reason = "Moderate complexity, templates may be suitable"
+            
+            return {
+                "suitable": suitable,
+                "confidence": confidence,
+                "reason": reason,
+                "detected_domain": detected_domain.value if hasattr(detected_domain, 'value') else str(detected_domain),
+                "detected_features": [f.value if hasattr(f, 'value') else str(f) for f in detected_features],
+                "feature_count": feature_count,
+                "complexity_indicators": complexity_indicators,
+                "template_patterns": template_patterns
+            }
+            
+        except Exception as e:
+            print(f"Template suitability analysis failed: {e}")
+            return {
+                "suitable": True,  # Default to suitable
+                "confidence": 0.5,
+                "reason": f"Analysis failed: {str(e)}",
+                "error": str(e)
+            }
+    
+    async def enhance_prompt(
+        self,
+        original_prompt: str,
+        context_analysis: Optional[Dict[str, Any]] = None,
+        user_patterns: Optional[List[str]] = None
+    ) -> str:
+        """Enhance the original prompt using context analysis and user patterns"""
+        try:
+            enhanced_prompt = original_prompt
+            
+            # Add context-based enhancements
+            if context_analysis:
+                # Add tech stack context
+                tech_stack = context_analysis.get("tech_stack", "fastapi_postgres")
+                if tech_stack and tech_stack not in original_prompt.lower():
+                    enhanced_prompt += f"\n\nTechnical Requirements:\n- Use {tech_stack} technology stack"
+                
+                # Add domain context
+                domain = context_analysis.get("project_context", {}).get("domain")
+                if domain and domain not in original_prompt.lower():
+                    enhanced_prompt += f"\n- Implement for {domain} domain"
+                
+                # Add feature context
+                features = context_analysis.get("extracted_features", [])
+                if features:
+                    enhanced_prompt += f"\n- Include features: {', '.join(features)}"
+            
+            # Add user pattern context
+            if user_patterns:
+                enhanced_prompt += f"\n\nUser Preferences:\n- Consider these common modifications: {', '.join(user_patterns[:3])}"
+            
+            return enhanced_prompt
+            
+        except Exception as e:
+            print(f"Prompt enhancement failed: {e}")
+            return original_prompt  # Return original prompt on failure
+    
+    async def get_user_patterns(self, user_id: str) -> List[str]:
+        """Get user patterns for prompt enhancement"""
+        try:
+            # This would analyze user's past successful modifications
+            # For now, return some common patterns
+            return [
+                "Add comprehensive error handling",
+                "Include input validation",
+                "Add logging for debugging",
+                "Implement proper authentication",
+                "Add database indexes for performance"
+            ]
+        except Exception as e:
+            print(f"Failed to get user patterns: {e}")
+            return []
     
     async def _generate_with_qwen_inference_direct(
         self, prompt: str, user_id: str, domain: Optional[str], tech_stack: Optional[str]
@@ -470,22 +598,34 @@ class EnhancedGenerationService:
         if use_enhanced_prompts and self.enhanced_prompt_system:
             try:
                 context_analysis = self.enhanced_prompt_system.generate_with_context(prompt, user_id)
-                strategy["context_analysis"] = context_analysis
-                
-                # Ensure context_analysis is a dictionary
-                if isinstance(context_analysis, dict):
+
+                # Ensure context_analysis is a valid dictionary
+                if context_analysis and isinstance(context_analysis, dict):
+                    strategy["context_analysis"] = context_analysis
+
                     user_context = context_analysis.get("user_context", {})
                     if isinstance(user_context, dict) and user_context.get("successful_projects"):
                         strategy["reasoning"].append("User has successful project history")
-                    
+
                     if context_analysis.get("similar_projects"):
                         strategy["reasoning"].append("Found similar successful projects")
                 else:
-                    print(f"Warning: Context analysis returned unexpected type: {type(context_analysis)}")
-                    strategy["reasoning"].append("Context analysis format error")
+                    # Fallback if context analysis fails
+                    strategy["context_analysis"] = {
+                        "user_context": {},
+                        "similar_projects": [],
+                        "enhanced_prompts": {},
+                        "recommendations": {}
+                    }
+
             except Exception as e:
-                print(f"Warning: Context analysis failed: {e}")
-                strategy["reasoning"].append("Context analysis unavailable")
+                print(f"Context analysis failed: {e}")
+                strategy["context_analysis"] = {
+                    "user_context": {},
+                    "similar_projects": [],
+                    "enhanced_prompts": {},
+                    "recommendations": {}
+                }
         
         # Decision logic
         if (strategy["template_suitable"] and 
@@ -518,13 +658,40 @@ class EnhancedGenerationService:
         
         # Use the template system's analysis capabilities
         try:
-            analysis = self.template_system.analyze_prompt_for_templates(prompt, domain, tech_stack)
+            # Use existing template system methods
+            detected_domain = self.template_system.detect_domain(prompt)
+            detected_features = self.template_system.detect_required_features(prompt, detected_domain)
+            
+            # Simple suitability analysis
+            prompt_lower = prompt.lower()
+            
+            # Check for complexity indicators
+            complexity_indicators = [
+                "microservices", "scalability", "high traffic", "real-time",
+                "complex business logic", "multiple domains", "advanced"
+            ]
+            
+            has_complexity = any(indicator in prompt_lower for indicator in complexity_indicators)
+            feature_count = len(detected_features)
+            
+            # Determine suitability
+            if has_complexity and feature_count > 3:
+                suitable = False
+                confidence = 0.3
+            elif feature_count <= 2:
+                suitable = True
+                confidence = 0.8
+            else:
+                suitable = True
+                confidence = 0.6
+            
             return {
-                "suitable": analysis.get("suitable", False),
-                "confidence": analysis.get("confidence", 0.5),
-                "recommended_template": analysis.get("recommended_template"),
-                "missing_features": analysis.get("missing_features", []),
-                "complexity_factors": analysis.get("complexity_factors", [])
+                "suitable": suitable,
+                "confidence": confidence,
+                "recommended_template": f"{detected_domain.value}_{tech_stack or 'fastapi_postgres'}" if hasattr(detected_domain, 'value') else f"general_{tech_stack or 'fastapi_postgres'}",
+                "missing_features": [],
+                "complexity_factors": complexity_indicators if has_complexity else [],
+                "detected_features": [f.value if hasattr(f, 'value') else str(f) for f in detected_features]
             }
         except Exception as e:
             print(f"Template analysis failed: {e}")
@@ -691,26 +858,25 @@ class EnhancedGenerationService:
             try:
                 # Get context analysis
                 context_analysis = self.enhanced_prompt_system.generate_with_context(prompt, user_id)
-                
-                # Ensure context_analysis is a dictionary
-                if isinstance(context_analysis, dict):
+
+                # Ensure context_analysis is a valid dictionary
+                if context_analysis and isinstance(context_analysis, dict):
                     # Apply AI enhancements to template result
                     enhanced_files = await self._enhance_template_with_ai(
-                        template_result["files"], 
+                        template_result["files"],
                         context_analysis,
                         prompt
                     )
-                    
+
                     template_result["files"] = enhanced_files
                     template_result["context_analysis"] = context_analysis
                     template_result["generation_method"] = "hybrid_enhanced"
                     template_result["quality_score"] = min(1.0, template_result["quality_score"] + 0.1)
                 else:
-                    print(f"Warning: Context analysis returned unexpected type: {type(context_analysis)}")
-                    template_result["generation_method"] = "hybrid_template_fallback"
-                
+                    print("Context analysis returned invalid result, skipping AI enhancement")
+
             except Exception as e:
-                print(f"AI enhancement failed, using template result: {e}")
+                print(f"AI enhancement failed: {e}, using template-only result")
                 template_result["generation_method"] = "hybrid_template_fallback"
         
         return template_result

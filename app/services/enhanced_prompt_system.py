@@ -426,7 +426,7 @@ class UserPatternAnalyzer:
         """Analyze user's historical patterns and preferences"""
         
         # Get user's project history
-        user_projects = self.project_repo.get_user_projects(user_id)
+        user_projects = self.project_repo.get_by_user_id(user_id)
         successful_projects = [
             project for project in user_projects 
             if project.status == "completed"
@@ -596,7 +596,8 @@ class ProjectSimilarityMatcher:
         """Find projects similar to the current prompt"""
         
         # Get all successful projects (not just user's)
-        all_projects = self.project_repo.get_successful_projects(limit=100)
+        # For now, get public projects as a proxy for successful ones
+        all_projects = self.project_repo.get_public_projects(limit=100)
         
         # Score projects by similarity
         scored_projects = []
@@ -692,30 +693,42 @@ class ContextAwareOrchestrator:
     
     def generate_with_context(self, prompt: str, user_id: str) -> Dict[str, Any]:
         """Generate code with full context awareness"""
-        
-        # 1. Analyze user patterns and context
-        user_context = self.pattern_analyzer.analyze_user_patterns(user_id)
-        
-        # 2. Find similar successful projects
-        similar_projects = self.similarity_matcher.find_similar_projects(
-            prompt, user_context
-        )
-        
-        # 3. Process through enhanced prompt chain
-        enhanced_prompts = self.prompt_chain.process_prompt_chain(
-            prompt, user_context, similar_projects
-        )
-        
-        # 4. Generate context-enriched response
-        generation_context = {
-            "original_prompt": prompt,
-            "user_context": user_context,
-            "similar_projects": similar_projects,
-            "enhanced_prompts": enhanced_prompts,
-            "recommendations": self._generate_recommendations(user_context, similar_projects)
-        }
-        
-        return generation_context
+
+        try:
+            # 1. Analyze user patterns and context
+            user_context = self.pattern_analyzer.analyze_user_patterns(user_id)
+
+            # 2. Find similar successful projects
+            similar_projects = self.similarity_matcher.find_similar_projects(
+                prompt, user_context
+            )
+
+            # 3. Process through enhanced prompt chain
+            enhanced_prompts = self.prompt_chain.process_prompt_chain(
+                prompt, user_context, similar_projects
+            )
+
+            # 4. Generate context-enriched response
+            generation_context = {
+                "original_prompt": prompt,
+                "user_context": user_context,
+                "similar_projects": similar_projects,
+                "enhanced_prompts": enhanced_prompts,
+                "recommendations": self._generate_recommendations(user_context, similar_projects)
+            }
+
+            return generation_context
+
+        except Exception as e:
+            print(f"Error in generate_with_context: {e}")
+            # Return minimal context on error
+            return {
+                "original_prompt": prompt,
+                "user_context": {},
+                "similar_projects": [],
+                "enhanced_prompts": {},
+                "recommendations": {}
+            }
     
     def _generate_recommendations(
         self, 

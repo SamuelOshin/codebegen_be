@@ -44,7 +44,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(projects.router, prefix="/projects", tags=["Projects"])
+app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"])
 app.include_router(templates.router, prefix="/templates", tags=["Templates"])
 
 # Unified Generation Router (Recommended)

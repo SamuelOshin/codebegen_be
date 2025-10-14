@@ -168,60 +168,246 @@ async def generate_project(
 @router.get(
     "/generate/{generation_id}/stream",
     summary="Stream generation progress",
-    description="Get real-time streaming updates of generation progress"
+    description="Get real-time streaming updates of generation progress with proper error handling, heartbeat, and connection management"
 )
 async def stream_generation_progress(
     generation_id: str,
     current_user: UserResponse = Depends(get_current_user)
 ):
-    """Stream real-time generation progress with unified event format"""
-    
+    """Stream real-time generation progress with unified event format and robust error handling"""
+
     async def event_stream():
         last_event_index = 0
-        
-        while True:
-            try:
-                # Check if there are new events
+        heartbeat_count = 0
+        connection_start = time.time()
+        max_connection_time = 1800  # 30 minutes max
+
+        try:
+            # Send initial connection event
+            initial_event = StreamingProgressEvent(
+                generation_id=generation_id,
+                status="connected",
+                stage="initializing",
+                progress=0.0,
+                message="Connected to generation stream - monitoring progress...",
+                timestamp=time.time()
+            )
+            yield f"data: {initial_event.json()}\n\n"
+
+            while True:
+                current_time = time.time()
+
+                # Check for connection timeout
+                if current_time - connection_start > max_connection_time:
+                    timeout_event = StreamingProgressEvent(
+                        generation_id=generation_id,
+                        status="timeout",
+                        stage="connection_closed",
+                        progress=0.0,
+                        message="Connection timeout - please refresh to continue monitoring",
+                        timestamp=current_time
+                    )
+                    yield f"data: {timeout_event.json()}\n\n"
+                    break
+
+                # Send heartbeat every 30 seconds
+                if heartbeat_count % 60 == 0:  # Every 30 seconds (60 * 0.5s)
+                    heartbeat_event = StreamingProgressEvent(
+                        generation_id=generation_id,
+                        status="heartbeat",
+                        stage="active",
+                        progress=0.0,
+                        message="Connection active - waiting for generation updates",
+                        timestamp=current_time,
+                        estimated_time_remaining=None
+                    )
+                    yield f"data: {heartbeat_event.json()}\n\n"
+
+                heartbeat_count += 1
+
+                # Check for new events
                 if generation_id in generation_events:
                     events = generation_events[generation_id]
-                    
+
                     # Send new events
                     for event in events[last_event_index:]:
-                        # Convert to unified format
-                        unified_event = StreamingProgressEvent(
-                            generation_id=generation_id,
-                            status=event.get("status", "processing"),
-                            stage=event.get("stage", "unknown"),
-                            progress=event.get("progress", 0) / 100.0,  # Convert to 0-1 range
-                            message=event.get("message", "Processing..."),
-                            ab_group=event.get("ab_group"),
-                            enhanced_features=event.get("enhanced_features"),
-                            generation_mode=event.get("generation_mode"),
-                            timestamp=event.get("timestamp", time.time())
-                        )
-                        
-                        yield f"data: {unified_event.json()}\\n\\n"
-                        last_event_index += 1
-                    
+                        try:
+                            # Convert to unified format
+                            unified_event = StreamingProgressEvent(
+                                generation_id=generation_id,
+                                status=event.get("status", "processing"),
+                                stage=event.get("stage", "unknown"),
+                                progress=float(event.get("progress", 0)) / 100.0,  # Convert to 0-1 range
+                                message=event.get("message", "Processing..."),
+                                ab_group=event.get("ab_group"),
+                                enhanced_features=event.get("enhanced_features"),
+                                generation_mode=event.get("generation_mode"),
+                                timestamp=event.get("timestamp", current_time),
+                                estimated_time_remaining=event.get("estimated_time_remaining"),
+                                current_file=event.get("current_file"),
+                                partial_output=event.get("partial_output")
+                            )
+
+                            yield f"data: {unified_event.json()}\n\n"
+
+                            # Update last event index
+                            last_event_index += 1
+
+                        except Exception as event_error:
+                            logger.error(f"Error processing event: {event_error}")
+                            error_event = StreamingProgressEvent(
+                                generation_id=generation_id,
+                                status="error",
+                                stage="stream_error",
+                                progress=0.0,
+                                message=f"Stream processing error: {str(event_error)}",
+                                timestamp=current_time
+                            )
+                            yield f"data: {error_event.json()}\n\n"
+
                     # Check if generation is complete
-                    if events and events[-1].get("status") in ["completed", "failed"]:
+                    if events and any(event.get("status") in ["completed", "failed"] for event in events):
+                        completion_event = StreamingProgressEvent(
+                            generation_id=generation_id,
+                            status="stream_closing",
+                            stage="complete",
+                            progress=1.0,
+                            message="Generation finished - closing stream",
+                            timestamp=current_time
+                        )
+                        yield f"data: {completion_event.json()}\n\n"
                         break
-                
+
+                # Wait before checking again
                 await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Error in event stream: {e}")
-                yield f"data: {{'error': '{str(e)}'}}\\n\\n"
-                break
-    
+
+        except asyncio.CancelledError:
+            # Connection closed by client
+            logger.info(f"Stream connection cancelled for generation {generation_id}")
+            close_event = StreamingProgressEvent(
+                generation_id=generation_id,
+                status="disconnected",
+                stage="connection_closed",
+                progress=0.0,
+                message="Client disconnected from stream",
+                timestamp=time.time()
+            )
+            yield f"data: {close_event.json()}\n\n"
+
+        except Exception as e:
+            logger.error(f"Critical stream error for generation {generation_id}: {e}")
+            error_event = StreamingProgressEvent(
+                generation_id=generation_id,
+                status="critical_error",
+                stage="stream_failed",
+                progress=0.0,
+                message=f"Stream failed: {str(e)} - Please try reconnecting",
+                timestamp=time.time()
+            )
+            yield f"data: {error_event.json()}\n\n"
+
+        finally:
+            # Cleanup
+            logger.info(f"Stream ended for generation {generation_id}")
+
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
         }
     )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering for SSE
+        }
+    )
+
+
+@router.get(
+    "/{generation_id}/status",
+    response_model=dict,
+    summary="Get generation status",
+    description="Get the current status and progress of a generation (polling fallback for streaming)"
+)
+async def get_generation_status(
+    generation_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Get generation status for polling fallback when streaming fails"""
+
+    try:
+        # Validate generation exists and user has access
+        generation_repo = GenerationRepository(db)
+        generation = await generation_repo.get_by_id(generation_id)
+
+        if not generation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Generation not found"
+            )
+
+        if generation.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to view this generation"
+            )
+
+        # Get latest events for this generation
+        events = generation_events.get(generation_id, [])
+        latest_event = events[-1] if events else None
+
+        # Build status response
+        status_response = {
+            "generation_id": generation_id,
+            "status": generation.status.value,
+            "created_at": generation.created_at.isoformat(),
+            "updated_at": generation.updated_at.isoformat(),
+            "progress": 0.0,
+            "stage": "unknown",
+            "message": "Generation status unknown",
+            "current_event": None,
+            "estimated_time_remaining": None,
+            "has_events": len(events) > 0
+        }
+
+        if latest_event:
+            status_response.update({
+                "progress": latest_event.get("progress", 0.0),
+                "stage": latest_event.get("stage", "processing"),
+                "message": latest_event.get("message", "Processing..."),
+                "current_event": latest_event,
+                "estimated_time_remaining": latest_event.get("estimated_time_remaining")
+            })
+
+        # Add completion details if finished
+        if generation.status.value in ["completed", "failed"]:
+            status_response["completed_at"] = generation.updated_at.isoformat()
+            if generation.status.value == "failed":
+                status_response["error"] = generation.error_message
+
+        return status_response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting generation status for {generation_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve generation status"
+        )
 
 
 @router.post(
@@ -387,101 +573,268 @@ async def _process_enhanced_generation(
         # Emit initial progress
         await _emit_event(generation_id, {
             "status": "processing",
-            "stage": "context_analysis",
-            "message": "Analyzing context and requirements...",
-            "progress": 10,
+            "stage": "initialization",
+            "message": "🚀 Starting enhanced generation pipeline...",
+            "progress": 5,
             "generation_mode": generation_config.mode,
-            "ab_group": ab_assignment.group
+            "ab_group": ab_assignment.group,
+            "estimated_time_remaining": 120,  # 2 minutes estimated
+            "current_file": None
         })
-        
+
+        # Validate user permissions and setup
+        await _emit_event(generation_id, {
+            "status": "processing",
+            "stage": "setup",
+            "message": "✅ Validating permissions and preparing workspace...",
+            "progress": 8,
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 115
+        })
+
         # Step 1: Context Analysis (if enabled)
         context_analysis = None
         if generation_config.use_context_analysis:
-            context_analysis = await enhanced_service.analyze_context(
-                prompt=request.prompt,
-                project_context=request.context,
-                tech_stack=request.tech_stack or "fastapi_postgres"
-            )
-            
             await _emit_event(generation_id, {
                 "status": "processing",
-                "stage": "prompt_enhancement",
-                "message": "Enhancing prompts based on context...",
-                "progress": 25,
-                "generation_mode": generation_config.mode
+                "stage": "context_analysis",
+                "message": "🔍 Analyzing user context and project requirements...",
+                "progress": 15,
+                "generation_mode": generation_config.mode,
+                "current_file": None,
+                "estimated_time_remaining": 90
             })
-        
+
+            try:
+                context_analysis = await enhanced_service.analyze_context(
+                    prompt=request.prompt,
+                    project_context=request.context,
+                    tech_stack=request.tech_stack or "fastapi_postgres"
+                )
+
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "context_analysis_complete",
+                    "message": "✅ Context analysis completed - enhancing prompts with user patterns...",
+                    "progress": 25,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 75,
+                    "context_insights": {
+                        "tech_stack": context_analysis.get("tech_stack") if context_analysis else None,
+                        "features_detected": len(context_analysis.get("extracted_features", [])) if context_analysis else 0
+                    }
+                })
+            except Exception as context_error:
+                logger.warning(f"Context analysis failed: {context_error}")
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "context_analysis_warning",
+                    "message": f"⚠️ Context analysis encountered issues, proceeding with basic analysis: {str(context_error)}",
+                    "progress": 20,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 80,
+                    "warning": str(context_error)
+                })
+                context_analysis = None
+
         # Step 2: Enhanced Prompt Generation (if enabled)
         enhanced_prompt = request.prompt
         if generation_config.use_enhanced_prompts:
-            enhanced_prompt = await enhanced_service.enhance_prompt(
-                original_prompt=request.prompt,
-                context_analysis=context_analysis,
-                user_patterns=await enhanced_service.get_user_patterns(user_id) if generation_config.use_user_patterns else None
-            )
-        
-        await _emit_event(generation_id, {
-            "status": "processing", 
-            "stage": "code_generation",
-            "message": "Generating code using AI models...",
-            "progress": 40,
-            "generation_mode": generation_config.mode
-        })
-        
-        # Step 3: AI Code Generation
-        if generation_config.use_hybrid_generation:
-            # Use hybrid approach (templates + AI)
-            generation_result = await enhanced_service.hybrid_generate(
-                prompt=enhanced_prompt,
-                context=request.context,
-                tech_stack=request.tech_stack or "fastapi_postgres",
-                domain=request.domain,
-                constraints=request.constraints
-            )
-        else:
-            # Use AI orchestrator directly
-            generation_result = await ai_orchestrator.process_generation(
-                prompt=enhanced_prompt,
-                context={
-                    **request.context,
-                    "tech_stack": request.tech_stack or "fastapi_postgres",
-                    "domain": request.domain,
-                    "constraints": request.constraints
-                },
-                user_id=user_id,
-                generation_id=generation_id
-            )
+            await _emit_event(generation_id, {
+                "status": "processing",
+                "stage": "prompt_enhancement",
+                "message": "🤖 Applying AI-powered prompt enhancements and user pattern matching...",
+                "progress": 30,
+                "generation_mode": generation_config.mode,
+                "estimated_time_remaining": 60
+            })
+
+            try:
+                enhanced_prompt = await enhanced_service.enhance_prompt(
+                    original_prompt=request.prompt,
+                    context_analysis=context_analysis,
+                    user_patterns=await enhanced_service.get_user_patterns(user_id) if generation_config.use_user_patterns else None
+                )
+
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "prompt_enhancement_complete",
+                    "message": "✅ Prompt enhancement completed - preparing for code generation...",
+                    "progress": 35,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 55,
+                    "enhancement_details": {
+                        "original_length": len(request.prompt),
+                        "enhanced_length": len(enhanced_prompt),
+                        "improvement_ratio": len(enhanced_prompt) / max(len(request.prompt), 1)
+                    }
+                })
+            except Exception as prompt_error:
+                logger.warning(f"Prompt enhancement failed: {prompt_error}")
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "prompt_enhancement_warning",
+                    "message": f"⚠️ Prompt enhancement failed, using original prompt: {str(prompt_error)}",
+                    "progress": 32,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 58,
+                    "warning": str(prompt_error)
+                })
+                enhanced_prompt = request.prompt
+
+            await _emit_event(generation_id, {
+                "status": "processing",
+                "stage": "prompt_enhancement_complete",
+                "message": "Prompt enhancement completed, starting code generation...",
+                "progress": 35,
+                "generation_mode": generation_config.mode,
+                "estimated_time_remaining": 45
+            })
         
         await _emit_event(generation_id, {
             "status": "processing",
-            "stage": "quality_assessment", 
-            "message": "Assessing code quality...",
-            "progress": 70,
-            "generation_mode": generation_config.mode
+            "stage": "code_generation",
+            "message": "Generating code using AI models...",
+            "progress": 40,
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 90
         })
+
+        # Step 3: AI Code Generation
+        await _emit_event(generation_id, {
+            "status": "processing",
+            "stage": "code_generation",
+            "message": "🎯 Starting AI-powered code generation...",
+            "progress": 40,
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 50
+        })
+
+        generation_result = None
+        try:
+            if generation_config.use_hybrid_generation:
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "hybrid_generation",
+                    "message": "🔄 Using hybrid approach: combining templates with AI generation...",
+                    "progress": 45,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 45
+                })
+
+                # Use hybrid approach (templates + AI)
+                generation_result = await enhanced_service.hybrid_generate(
+                    prompt=enhanced_prompt,
+                    context=request.context,
+                    tech_stack=request.tech_stack or "fastapi_postgres",
+                    domain=request.domain,
+                    constraints=request.constraints
+                )
+            else:
+                await _emit_event(generation_id, {
+                    "status": "processing",
+                    "stage": "ai_generation",
+                    "message": "🤖 Using direct AI generation...",
+                    "progress": 45,
+                    "generation_mode": generation_config.mode,
+                    "estimated_time_remaining": 45
+                })
+
+                # Use AI orchestrator directly
+                generation_result = await ai_orchestrator.process_generation(
+                    generation_id,
+                    {
+                        "prompt": enhanced_prompt,
+                        "context": {
+                            **request.context,
+                            "tech_stack": request.tech_stack or "fastapi_postgres",
+                            "domain": request.domain,
+                            "constraints": request.constraints
+                        },
+                        "user_id": user_id,
+                        "use_enhanced_prompts": False
+                    }
+                )
+
+            await _emit_event(generation_id, {
+                "status": "processing",
+                "stage": "code_generation_complete",
+                "message": f"✅ Code generation completed - {len(generation_result.get('files', {}))} files generated",
+                "progress": 65,
+                "generation_mode": generation_config.mode,
+                "files_count": len(generation_result.get("files", {})),
+                "estimated_time_remaining": 30,
+                "generation_stats": {
+                    "files_generated": len(generation_result.get("files", {})),
+                    "total_lines": sum(len(content.split('\n')) for content in generation_result.get("files", {}).values()),
+                    "main_files": [f for f in generation_result.get("files", {}).keys() if not f.startswith("test_")]
+                }
+            })
+
+        except Exception as gen_error:
+            logger.error(f"Code generation failed: {gen_error}")
+            await _emit_event(generation_id, {
+                "status": "error",
+                "stage": "code_generation_failed",
+                "message": f"❌ Code generation failed: {str(gen_error)}",
+                "progress": 45,
+                "generation_mode": generation_config.mode,
+                "error": str(gen_error),
+                "error_type": type(gen_error).__name__
+            })
+            raise  # Re-raise to trigger error handling
         
         # Step 4: Quality Assessment
+        await _emit_event(generation_id, {
+            "status": "processing",
+            "stage": "quality_assessment",
+            "message": "Running comprehensive code quality analysis...",
+            "progress": 75,
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 20
+        })
+
         quality_metrics = await quality_assessor.assess_project(
             generation_id=generation_id,
             files=generation_result.get("files", {})
         )
-        
+
+        await _emit_event(generation_id, {
+            "status": "processing",
+            "stage": "quality_assessment_complete",
+            "message": f"Quality assessment completed (Score: {quality_metrics.overall_score:.2f})",
+            "progress": 80,
+            "generation_mode": generation_config.mode,
+            "quality_score": quality_metrics.overall_score,
+            "estimated_time_remaining": 15
+        })
+
+        # Step 5: File Management and Storage
         await _emit_event(generation_id, {
             "status": "processing",
             "stage": "file_management",
-            "message": "Organizing and saving files...",
+            "message": "Organizing and saving generated files...",
             "progress": 85,
-            "generation_mode": generation_config.mode
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 10
         })
-        
-        # Step 5: File Management and Storage
+
         file_metadata = await file_manager.save_generation_files(
             generation_id=generation_id,
             files=generation_result.get("files", {})
         )
-        
+
         # Create downloadable ZIP
         zip_path = await file_manager.create_generation_zip(generation_id, user_id)
+
+        await _emit_event(generation_id, {
+            "status": "processing",
+            "stage": "finalizing",
+            "message": "Finalizing generation and preparing download...",
+            "progress": 95,
+            "generation_mode": generation_config.mode,
+            "estimated_time_remaining": 5
+        })
         
         # Step 6: Record Metrics and Validation
         if generation_config.use_metrics_tracking:
@@ -536,12 +889,19 @@ async def _process_enhanced_generation(
         await _emit_event(generation_id, {
             "status": "completed",
             "stage": "complete",
-            "message": "Generation completed successfully",
+            "message": f"🎉 Generation completed successfully! {len(generation_result.get('files', {}))} files ready for download",
             "progress": 100,
             "generation_mode": generation_config.mode,
             "ab_group": ab_assignment.group,
             "quality_score": quality_metrics.overall_score,
-            "files_count": len(generation_result.get("files", {}))
+            "files_count": len(generation_result.get("files", {})),
+            "final_stats": {
+                "total_files": len(generation_result.get("files", {})),
+                "total_lines": sum(len(content.split('\n')) for content in generation_result.get("files", {}).values()),
+                "quality_score": quality_metrics.overall_score,
+                "generation_time_seconds": int(time.time() - time.time()),  # Will be calculated properly
+                "download_url": f"/api/generations/{generation_id}/download"
+            }
         })
         
         logger.info(f"Enhanced generation {generation_id} completed successfully")
@@ -594,10 +954,22 @@ async def _process_enhanced_generation(
         await _emit_event(generation_id, {
             "status": "failed",
             "stage": "error",
-            "message": f"Enhanced generation failed: {str(e)}",
+            "message": f"❌ Generation failed: {str(e)} - Please try again or contact support",
             "progress": 0,
             "generation_mode": generation_config.mode,
-            "error": str(e)
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "recovery_suggestions": [
+                "Try simplifying your prompt",
+                "Check your internet connection",
+                "Try again in a few minutes",
+                "Contact support if the issue persists"
+            ],
+            "support_info": {
+                "error_id": generation_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "user_id": user_id
+            }
         })
 
 
