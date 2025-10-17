@@ -26,9 +26,9 @@ def upgrade() -> None:
     sa.Column('username', sa.String(length=50), nullable=True),
     sa.Column('full_name', sa.String(length=255), nullable=True),
     sa.Column('hashed_password', sa.String(length=255), nullable=True),
-    sa.Column('is_active', sa.Boolean(), nullable=False, server_default='false'),
-    sa.Column('is_superuser', sa.Boolean(), nullable=False, server_default='false'),
-    sa.Column('is_verified', sa.Boolean(), nullable=False, server_default='false'),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('is_superuser', sa.Boolean(), nullable=False),
+    sa.Column('is_verified', sa.Boolean(), nullable=False),
     sa.Column('avatar_url', sa.String(length=500), nullable=True),
     sa.Column('bio', sa.Text(), nullable=True),
     sa.Column('location', sa.String(length=100), nullable=True),
@@ -37,7 +37,7 @@ def upgrade() -> None:
     sa.Column('github_username', sa.String(length=100), nullable=True),
     sa.Column('github_access_token', sa.String(length=500), nullable=True),
     sa.Column('preferences', sa.JSON(), nullable=True),
-    sa.Column('total_generations', sa.Integer(), nullable=False, server_default='0'),
+    sa.Column('total_generations', sa.Integer(), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -51,7 +51,7 @@ def upgrade() -> None:
     sa.Column('slug', sa.String(length=100), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('owner_id', sa.String(length=36), nullable=False),
-    sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('max_members', sa.Integer(), nullable=False),
     sa.Column('max_projects', sa.Integer(), nullable=False),
     sa.Column('subscription_plan', sa.String(length=50), nullable=False),
@@ -70,7 +70,7 @@ def upgrade() -> None:
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('role', sa.String(length=20), nullable=False),
     sa.Column('permissions', sa.JSON(), nullable=True),
-    sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('invited_by_id', sa.String(length=36), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -89,7 +89,7 @@ def upgrade() -> None:
     sa.Column('tech_stack', sa.String(length=50), nullable=False),
     sa.Column('constraints', sa.JSON(), nullable=True),
     sa.Column('status', sa.String(length=20), nullable=False),
-    sa.Column('is_public', sa.Boolean(), nullable=False, server_default='false'),
+    sa.Column('is_public', sa.Boolean(), nullable=False),
     sa.Column('github_repo_url', sa.String(length=500), nullable=True),
     sa.Column('github_repo_name', sa.String(length=255), nullable=True),
     sa.Column('settings', sa.JSON(), nullable=True),
@@ -101,8 +101,6 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_projects_name'), 'projects', ['name'], unique=False)
-    op.create_index(op.f('ix_projects_user_id'), 'projects', ['user_id'], unique=False)
-    op.create_index(op.f('ix_projects_organization_id'), 'projects', ['organization_id'], unique=False)
     op.create_table('generations',
     sa.Column('project_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
@@ -120,7 +118,7 @@ def upgrade() -> None:
     sa.Column('review_time', sa.Float(), nullable=True),
     sa.Column('docs_generation_time', sa.Float(), nullable=True),
     sa.Column('total_time', sa.Float(), nullable=True),
-    sa.Column('is_iteration', sa.Boolean(), nullable=False, server_default='false'),
+    sa.Column('is_iteration', sa.Boolean(), nullable=False),
     sa.Column('parent_generation_id', sa.String(length=36), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -130,11 +128,6 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_generations_project_id'), 'generations', ['project_id'], unique=False)
-    op.create_index(op.f('ix_generations_user_id'), 'generations', ['user_id'], unique=False)
-    op.create_index(op.f('ix_generations_parent_id'), 'generations', ['parent_generation_id'], unique=False)
-    op.create_index('ix_generations_project_created', 'generations', ['project_id', 'created_at'], unique=False)
-    op.create_index('ix_generations_user_status', 'generations', ['user_id', 'status'], unique=False)
     op.create_table('artifacts',
     sa.Column('generation_id', sa.String(length=36), nullable=False),
     sa.Column('type', sa.String(length=20), nullable=False),
@@ -147,23 +140,14 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['generation_id'], ['generations.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_artifacts_generation_id'), 'artifacts', ['generation_id'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f('ix_artifacts_generation_id'), table_name='artifacts')
     op.drop_table('artifacts')
-    op.drop_index('ix_generations_user_status', table_name='generations')
-    op.drop_index('ix_generations_project_created', table_name='generations')
-    op.drop_index(op.f('ix_generations_parent_id'), table_name='generations')
-    op.drop_index(op.f('ix_generations_user_id'), table_name='generations')
-    op.drop_index(op.f('ix_generations_project_id'), table_name='generations')
     op.drop_table('generations')
-    op.drop_index(op.f('ix_projects_organization_id'), table_name='projects')
-    op.drop_index(op.f('ix_projects_user_id'), table_name='projects')
     op.drop_index(op.f('ix_projects_name'), table_name='projects')
     op.drop_table('projects')
     op.drop_table('organization_members')

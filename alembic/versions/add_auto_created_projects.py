@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'add_auto_created_projects'
-down_revision = '39e7f45c72f1'  # Correctly points to the versioning migration
+down_revision = '39e7f45c72f1'  # Update this with your latest migration
 branch_labels = None
 depends_on = None
 
