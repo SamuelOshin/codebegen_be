@@ -22,11 +22,14 @@ from app.schemas.generation import (
     GenerationStatsResponse, GenerationFilters, StreamingProgress,
     GenerationFileResponse, GenerationSearchRequest, GenerationSearchResponse,
     GitHubDeploymentRequest, GitHubDeploymentResponse,
-    GenerationComparisonRequest, GenerationComparisonResponse
+    GenerationComparisonRequest, GenerationComparisonResponse,
+    GenerationSummary, VersionListResponse, ActivateGenerationRequest,
+    ActivateGenerationResponse, VersionComparisonResponse
 )
 from app.schemas.user import UserResponse
 from app.services.ai_orchestrator import ai_orchestrator
 from app.services.file_manager import file_manager
+from app.services.generation_service import GenerationService
 from app.services.github_service import github_service
 from app.services.quality_assessor import quality_assessor
 from app.services.generation_file_service import (
@@ -168,12 +171,16 @@ async def generate_project(
             )
         
         # Return unified response
+        # Get project info for response
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(generation_record.project_id) if generation_record.project_id else None
+        
         return UnifiedGenerationResponse(
             generation_id=generation_id,
             status=GenerationStatus.PENDING,
             message=f"Generation started in {generation_config.mode} mode",
             user_id=current_user.id,
-            project_id=request.project_id,
+            project_id=generation_record.project_id,
             prompt=request.prompt,
             context=request.context,
             generation_mode=generation_config.mode,
@@ -182,7 +189,11 @@ async def generate_project(
             is_iteration=request.is_iteration,
             parent_generation_id=request.parent_generation_id,
             created_at=generation_record.created_at,
-            updated_at=generation_record.updated_at
+            updated_at=generation_record.updated_at,
+            # Include auto-created project information
+            auto_created_project=project.auto_created if project else None,
+            project_name=project.name if project else None,
+            project_domain=project.domain if project else None
         )
         
     except HTTPException:
@@ -200,54 +211,316 @@ async def generate_project(
         )
 
 
+# Rate limiting storage for SSE token generation
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+_token_generation_attempts = defaultdict(list)
+_MAX_TOKEN_REQUESTS_PER_MINUTE = 10  # Max 10 token requests per minute per generation
+
+
+@router.post(
+    "/generate/{generation_id}/stream-token",
+    summary="Generate SSE token",
+    description="Generate a short-lived token for SSE streaming (60 seconds, single-use)"
+)
+async def create_sse_token(
+    generation_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """
+    Generate a short-lived SSE token for secure streaming.
+    
+    Security:
+    - Requires valid Bearer token authentication
+    - Generates single-use, 60-second token
+    - Verifies user has access to generation
+    - No JWT exposure in URLs
+    - Rate limited to prevent abuse
+    
+    Returns:
+        SSE token, expiration time, and stream URL
+    """
+    from app.services.sse_token_service import sse_token_service
+    
+    try:
+        # Rate limiting check
+        rate_limit_key = f"{current_user.id}:{generation_id}"
+        now = datetime.utcnow()
+        one_minute_ago = now - timedelta(minutes=1)
+        
+        # Clean old attempts
+        _token_generation_attempts[rate_limit_key] = [
+            timestamp for timestamp in _token_generation_attempts[rate_limit_key]
+            if timestamp > one_minute_ago
+        ]
+        
+        # Check rate limit
+        if len(_token_generation_attempts[rate_limit_key]) >= _MAX_TOKEN_REQUESTS_PER_MINUTE:
+            logger.warning(f"Rate limit exceeded for user {current_user.id}, generation {generation_id}")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many token requests. Maximum {_MAX_TOKEN_REQUESTS_PER_MINUTE} requests per minute. Please wait before retrying."
+            )
+        
+        # Record this attempt
+        _token_generation_attempts[rate_limit_key].append(now)
+        
+        # Verify generation exists
+        generation_repo = GenerationRepository(db)
+        generation = await generation_repo.get_by_id(generation_id)
+        
+        if not generation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Generation not found"
+            )
+        
+        # Verify user has access
+        if generation.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this generation"
+            )
+        
+        # Check if generation is in a terminal state
+        if generation.status in ["failed", "cancelled"]:
+            logger.warning(f"Attempted to stream {generation.status} generation {generation_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Generation has {generation.status}. Error: {generation.error_message or 'Unknown error'}. Cannot stream."
+            )
+        
+        # Check if generation is already completed
+        if generation.status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Generation already completed. Streaming not available for completed generations."
+            )
+        
+        # Generate short-lived SSE token
+        sse_token = sse_token_service.generate_sse_token(
+            user_id=current_user.id,
+            generation_id=generation_id,
+            ttl_seconds=60  # 1 minute validity
+        )
+        
+        logger.info(f"Generated SSE token for user {current_user.id}, generation {generation_id}")
+        
+        return {
+            "sse_token": sse_token,
+            "expires_in": 60,
+            "stream_url": f"/generations/generate/{generation_id}/stream",
+            "generation_id": generation_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating SSE token: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate SSE token"
+        )
+
+
 @router.get(
     "/generate/{generation_id}/stream",
     summary="Stream generation progress",
-    description="Get real-time streaming updates of generation progress"
+    description="Get real-time streaming updates of generation progress using SSE token"
 )
 async def stream_generation_progress(
     generation_id: str,
-    current_user: UserResponse = Depends(get_current_user)
+    token: str = Query(..., description="Short-lived SSE token from /stream-token endpoint"),
+    db: AsyncSession = Depends(get_async_db)
 ):
+    """
+    Stream real-time generation progress with unified event format.
+    
+    Security:
+    - Uses short-lived (60s), single-use tokens
+    - Tokens generated via authenticated /stream-token endpoint
+    - No JWT exposure in URLs
+    - Token automatically invalidated after connection closes
+    
+    Note: Token must be obtained from POST /generate/{generation_id}/stream-token
+    """
+    from app.services.sse_token_service import sse_token_service
+    
+    # Validate SSE token
+    user_id = sse_token_service.validate_sse_token(token, generation_id)
+    
+    if not user_id:
+        logger.warning(f"Invalid SSE token attempt for generation {generation_id}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSE token. Please request a new token from /stream-token endpoint."
+        )
+    
+    # Verify generation exists and belongs to user
+    generation_repo = GenerationRepository(db)
+    generation = await generation_repo.get_by_id(generation_id)
+    
+    if not generation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generation not found"
+        )
+    
+    if generation.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    logger.info(f"SSE stream started for user {user_id}, generation {generation_id}")
+    
     """Stream real-time generation progress with unified event format"""
     
     async def event_stream():
         last_event_index = 0
+        max_empty_polls = 120  # Max 60 seconds of polling (120 * 0.5s)
+        empty_poll_count = 0
         
-        while True:
-            try:
-                # Check if there are new events
-                if generation_id in generation_events:
-                    events = generation_events[generation_id]
-                    
-                    # Send new events
-                    for event in events[last_event_index:]:
-                        # Convert to unified format
-                        unified_event = StreamingProgressEvent(
-                            generation_id=generation_id,
-                            status=event.get("status", "processing"),
-                            stage=event.get("stage", "unknown"),
-                            progress=event.get("progress", 0) / 100.0,  # Convert to 0-1 range
-                            message=event.get("message", "Processing..."),
-                            ab_group=event.get("ab_group"),
-                            enhanced_features=event.get("enhanced_features"),
-                            generation_mode=event.get("generation_mode"),
-                            timestamp=event.get("timestamp", time.time())
-                        )
+        logger.info(f"📡 [SSE] Stream started for generation {generation_id[:8]}...")
+        
+        try:
+            # Send initial connection event
+            initial_event = StreamingProgressEvent(
+                generation_id=generation_id,
+                status=generation.status,
+                stage="connected",
+                progress=0.0,
+                message="Stream connected",
+                timestamp=time.time()
+            )
+            yield f"data: {initial_event.json()}\n\n"
+            logger.info(f"📤 [SSE] Sent initial connection event")
+            
+            # Check if generation is already in terminal state
+            if generation.status in ["failed", "cancelled"]:
+                # Refresh generation to get latest status
+                await db.refresh(generation)
+                
+                terminal_event = StreamingProgressEvent(
+                    generation_id=generation_id,
+                    status=generation.status,
+                    stage="terminal",
+                    progress=0.0 if generation.status == "failed" else 1.0,
+                    message=generation.error_message or f"Generation {generation.status}",
+                    timestamp=time.time()
+                )
+                yield f"data: {terminal_event.json()}\n\n"
+                logger.warning(f"Generation {generation_id} is in terminal state: {generation.status}")
+                return  # Stop streaming - frontend should not retry
+            
+            # Check if generation completed successfully
+            if generation.status == "completed":
+                complete_event = StreamingProgressEvent(
+                    generation_id=generation_id,
+                    status="completed",
+                    stage="complete",
+                    progress=1.0,
+                    message="Generation completed successfully",
+                    timestamp=time.time()
+                )
+                yield f"data: {complete_event.json()}\n\n"
+                logger.info(f"Generation {generation_id} already completed")
+                return  # Stop streaming
+            
+            while True:
+                try:
+                    # Check if there are new events
+                    if generation_id in generation_events:
+                        events = generation_events[generation_id]
                         
-                        yield f"data: {unified_event.json()}\\n\\n"
-                        last_event_index += 1
+                        if len(events) > last_event_index:
+                            logger.info(f"📊 [SSE] Found {len(events)} total events, sending from index {last_event_index}")
+                        
+                        # Reset empty poll counter when events exist
+                        empty_poll_count = 0
+                        
+                        # Send new events
+                        for event in events[last_event_index:]:
+                            logger.info(f"📤 [SSE] Sending event: stage={event.get('stage')}, progress={event.get('progress')}")
+                            
+                            # Convert to unified format
+                            unified_event = StreamingProgressEvent(
+                                generation_id=generation_id,
+                                status=event.get("status", "processing"),
+                                stage=event.get("stage", "unknown"),
+                                progress=event.get("progress", 0) / 100.0,  # Convert to 0-1 range
+                                message=event.get("message", "Processing..."),
+                                ab_group=event.get("ab_group"),
+                                enhanced_features=event.get("enhanced_features"),
+                                generation_mode=event.get("generation_mode"),
+                                timestamp=event.get("timestamp", time.time())
+                            )
+                            
+                            yield f"data: {unified_event.json()}\n\n"
+                            last_event_index += 1
+                        
+                        # Check if generation is complete
+                        if events and events[-1].get("status") in ["completed", "failed", "cancelled"]:
+                            logger.info(f"Generation {generation_id} reached terminal status: {events[-1].get('status')}")
+                            break
+                    else:
+                        # No events yet - check if generation has started
+                        empty_poll_count += 1
+                        
+                        if empty_poll_count % 10 == 0:  # Log every 5 seconds
+                            logger.info(f"⏳ [SSE] Still waiting for events... (poll #{empty_poll_count}/{max_empty_polls})")
+                        
+                        # Refresh generation status from database
+                        await db.refresh(generation)
+                        
+                        # Check if generation entered error state
+                        if generation.status in ["failed", "cancelled"]:
+                            error_event = StreamingProgressEvent(
+                                generation_id=generation_id,
+                                status=generation.status,
+                                stage="error",
+                                progress=0.0,
+                                message=generation.error_message or f"Generation {generation.status}",
+                                timestamp=time.time()
+                            )
+                            yield f"data: {error_event.json()}\n\n"
+                            logger.error(f"Generation {generation_id} failed during streaming: {generation.error_message}")
+                            break
+                        
+                        # Timeout if no events for too long
+                        if empty_poll_count >= max_empty_polls:
+                            timeout_event = StreamingProgressEvent(
+                                generation_id=generation_id,
+                                status="failed",
+                                stage="timeout",
+                                progress=0.0,
+                                message="Generation timed out - no events received",
+                                timestamp=time.time()
+                            )
+                            yield f"data: {timeout_event.json()}\n\n"
+                            logger.error(f"Generation {generation_id} stream timeout after {max_empty_polls * 0.5}s")
+                            break
                     
-                    # Check if generation is complete
-                    if events and events[-1].get("status") in ["completed", "failed"]:
-                        break
+                    await asyncio.sleep(0.5)
                 
-                await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Error in event stream: {e}")
-                yield f"data: {{'error': '{str(e)}'}}\\n\\n"
-                break
+                except Exception as e:
+                    logger.error(f"Error in event stream: {e}")
+                    error_event = StreamingProgressEvent(
+                        generation_id=generation_id,
+                        status="failed",
+                        stage="error",
+                        progress=0.0,
+                        message=f"Stream error: {str(e)}",
+                        timestamp=time.time()
+                    )
+                    yield f"data: {error_event.json()}\n\n"
+                    break
+        finally:
+            # Cleanup: Invalidate token after stream closes
+            logger.info(f"SSE stream closed for generation {generation_id}, invalidating token")
+            sse_token_service.invalidate_token(token)
     
     return StreamingResponse(
         event_stream(),
@@ -348,43 +621,72 @@ async def _create_generation_record(
     generation_config,
     db: AsyncSession
 ):
-    """Create generation record in database"""
+    """
+    Create generation record in database with intelligent auto-project creation.
+    
+    When project_id is None:
+    1. Analyzes the user's prompt using NLP
+    2. Extracts key entities, technologies, and domain
+    3. Generates a meaningful project name
+    4. Sets appropriate domain and tech_stack
+    5. Marks project as auto_created=True
+    6. Creates generation linked to this project
+    7. Returns generation record with project_id set
+    """
+    from app.services.auto_project_service import create_auto_project_service
+    
     generation_repo = GenerationRepository(db)
-    project_repo = ProjectRepository(db)
     
-    # Handle project_id requirement - create default project if none provided
+    # Handle project_id - use intelligent auto-creation if not provided
     project_id = request.project_id
-    if not project_id:
-        # Create or get default project for standalone generations
-        default_project_name = f"Standalone Generations - {datetime.utcnow().strftime('%Y-%m')}"
-        
-        # Try to find existing default project for this user
-        user_projects = await project_repo.get_by_user_id(user_id)
-        default_project = None
-        
-        for project in user_projects:
-            if project.name.startswith("Standalone Generations"):
-                default_project = project
-                break
-        
-        # Create default project if it doesn't exist
-        if not default_project:
-            default_project_data = {
-                "name": default_project_name,
-                "description": "Auto-created project for standalone AI generations",
-                "user_id": user_id,
-                "tech_stack": request.tech_stack or "fastapi_postgres",
-                "domain": request.domain or "general",
-                "settings": {
-                    "auto_created": True,
-                    "type": "standalone_generations",
-                    "created_for": "unified_generation_router"
-                }
-            }
-            default_project = await project_repo.create(default_project_data)
-        
-        project_id = default_project.id
+    auto_created_project = None
     
+    if not project_id:
+        logger.info(f"No project_id provided. Starting intelligent auto-project creation for user {user_id}")
+        
+        # Create auto-project service
+        auto_project_service = create_auto_project_service(db)
+        
+        # Prepare context from request
+        context = {
+            "domain": request.domain,
+            "tech_stack": request.tech_stack,
+            **request.context
+        }
+        
+        # Determine creation source
+        creation_source = "homepage_generation" if not request.project_id else "api_call"
+        
+        # Create or find appropriate project using AI-powered analysis
+        auto_created_project, analysis_result = await auto_project_service.create_or_find_project(
+            user_id=user_id,
+            prompt=request.prompt,
+            context=context,
+            creation_source=creation_source
+        )
+        
+        project_id = auto_created_project.id
+        
+        logger.info(
+            f"Auto-created project '{auto_created_project.name}' (ID: {project_id}) "
+            f"with domain '{analysis_result.domain}' and confidence {analysis_result.confidence:.2f}"
+        )
+        
+        # Emit event for frontend notification
+        await _emit_event(generation_id, {
+            "type": "project_auto_created",
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {
+                "project_id": project_id,
+                "project_name": auto_created_project.name,
+                "domain": analysis_result.domain,
+                "entities": analysis_result.entities,
+                "features": analysis_result.features,
+                "confidence": analysis_result.confidence
+            }
+        })
+    
+    # Create generation record
     generation_data = {
         "id": generation_id,
         "user_id": user_id,
@@ -394,14 +696,21 @@ async def _create_generation_record(
             **request.context,
             "generation_mode": generation_config.mode,
             "ab_group": generation_config.ab_group,
-            "enhanced_features": generation_config.features_enabled
+            "enhanced_features": generation_config.features_enabled,
+            "auto_created_project": auto_created_project is not None
         },
         "is_iteration": request.is_iteration,
         "parent_generation_id": request.parent_generation_id,
         "status": "pending"
     }
     
-    return await generation_repo.create(generation_data)
+    generation_record = await generation_repo.create(generation_data)
+    
+    # Store project_id in generation record's context for frontend access
+    if auto_created_project:
+        generation_record.context["auto_created_project_id"] = project_id
+    
+    return generation_record
 
 
 async def _process_enhanced_generation(
@@ -474,7 +783,7 @@ async def _process_enhanced_generation(
                 constraints=request.constraints
             )
         else:
-            # Use AI orchestrator directly
+            # Use AI orchestrator directly with file_manager for incremental saving
             generation_result = await ai_orchestrator.process_generation(
                 generation_id,
                 {
@@ -487,8 +796,13 @@ async def _process_enhanced_generation(
                     },
                     "user_id": user_id,
                     "use_enhanced_prompts": False
-                }
+                },
+                file_manager=file_manager  # Pass file_manager for incremental saving
             )
+        
+        # Defensive check: Ensure generation_result is not None
+        if generation_result is None:
+            raise ValueError("AI Orchestrator returned None - generation may have succeeded but response was not properly formatted")
         
         await _emit_event(generation_id, {
             "status": "processing",
@@ -519,7 +833,7 @@ async def _process_enhanced_generation(
         )
         
         # Create downloadable ZIP
-        zip_path = await file_manager.create_generation_zip(generation_id, user_id)
+        zip_path = await file_manager.create_zip_archive(generation_id)
         
         # Step 6: Record Metrics and Validation
         if generation_config.use_metrics_tracking:
@@ -647,6 +961,8 @@ async def _process_classic_generation(
     db: AsyncSession
 ):
     """Process generation using classic mode with full consolidated logic"""
+    start_time = time.time()  # Track generation time
+    
     try:
         # Emit initial event
         await _emit_event(generation_id, {
@@ -672,32 +988,72 @@ async def _process_classic_generation(
         
         # For now, let's use a simpler approach that generates the result directly
         try:
-            # Create a GenerationRequest object for the orchestrator
-            from app.services.ai_orchestrator import GenerationRequest
-            orchestrator_request = GenerationRequest(
-                prompt=request.prompt,
-                context={
-                    **request.context,
-                    "tech_stack": request.tech_stack or "fastapi_postgres",
-                    "domain": request.domain,
-                    "constraints": request.constraints,
-                    "generation_mode": "classic"
-                },
-                user_id=user_id,
-                use_enhanced_prompts=False
-            )
+            # ✅ FIX 4: Fetch parent files for iteration
+            generation_repo = GenerationRepository(db)
+            parent_files = None
+            if request.is_iteration and request.parent_generation_id:
+                try:
+                    parent_gen = await generation_repo.get_by_id(request.parent_generation_id)
+                    if parent_gen:
+                        parent_files = parent_gen.output_files or {}
+                        logger.info(f"[Classic] Fetched {len(parent_files)} parent files for iteration")
+                except Exception as fetch_err:
+                    logger.warning(f"[Classic] Could not fetch parent files: {fetch_err}")
             
-            # Use the generate_project method instead of process_generation
-            generation_result = await ai_orchestrator.generate_project(orchestrator_request)
-            
-            # Convert GenerationResult to dict format
-            result_dict = {
-                "files": generation_result.files,
-                "schema": generation_result.schema,
-                "review_feedback": generation_result.review_feedback,
-                "documentation": generation_result.documentation,
-                "quality_score": generation_result.quality_score
-            }
+            # ✅ CRITICAL FIX: Route iterations to iterate_project() for context-aware editing
+            if request.is_iteration and parent_files:
+                logger.info(f"[Iteration] Routing to iterate_project() with {len(parent_files)} parent files")
+                
+                # Use iterate_project for context-aware iteration
+                result_files = await ai_orchestrator.iterate_project(
+                    existing_files=parent_files,
+                    modification_prompt=request.prompt,
+                    context={
+                        "tech_stack": request.tech_stack or "fastapi_postgres",
+                        "domain": request.domain,
+                        "constraints": request.constraints,
+                        "generation_mode": "classic",
+                        "generation_id": generation_id  # ✅ Pass generation_id for event emission
+                    },
+                    event_callback=_emit_event  # ✅ Pass event callback for SSE updates
+                )
+                
+                # Build result dict for saving
+                result_dict = {
+                    "files": result_files,
+                    "schema": {},
+                    "review_feedback": [],
+                    "documentation": {},
+                    "quality_score": 0.8
+                }
+                
+                logger.info(f"[Iteration] Generated {len(result_files)} files (parent: {len(parent_files)}, new/modified: {len(result_files) - len(parent_files)})")
+                
+                # Continue to quality assessment and saving...
+            else:
+                # Normal generation (non-iteration) uses process_generation
+                await ai_orchestrator.process_generation(
+                    generation_id=generation_id,
+                    generation_data={
+                        "prompt": request.prompt,
+                        "context": {
+                            **request.context,
+                            "tech_stack": request.tech_stack or "fastapi_postgres",
+                            "domain": request.domain,
+                            "constraints": request.constraints,
+                            "generation_mode": "classic",
+                            "is_iteration": request.is_iteration,  # ✅ FIX 2: Propagate iteration flag
+                            "parent_generation_id": request.parent_generation_id,  # ✅ FIX 2: Propagate parent ID
+                            "parent_files": parent_files,  # ✅ FIX 4: Include parent files in context
+                        },
+                        "user_id": user_id,
+                        "use_enhanced_prompts": False
+                    },
+                    file_manager=file_manager,  # ✅ Enable incremental file saving
+                    event_callback=_emit_event  # ✅ Enable live progress updates
+                )
+                # process_generation handles everything internally, so return early
+                return
             
         except Exception as inner_e:
             logger.warning(f"Direct generation failed, falling back to process_generation: {inner_e}")
@@ -715,7 +1071,9 @@ async def _process_classic_generation(
                     },
                     "user_id": user_id,
                     "use_enhanced_prompts": False
-                }
+                },
+                file_manager=file_manager,  # Enable incremental file saving
+                event_callback=_emit_event  # Enable live progress updates
             )
             # In this case, the orchestrator handles everything, so we'll return early
             return
@@ -744,14 +1102,44 @@ async def _process_classic_generation(
             "generation_mode": generation_config.mode
         })
         
+        # ✅ FIX 7: Validate iteration results to detect data loss
+        files_to_save = result_dict.get("files", {})
+        if request.is_iteration and request.parent_generation_id:
+            try:
+                parent_gen = await generation_repo.get_by_id(request.parent_generation_id)
+                if parent_gen:
+                    parent_file_count = len(parent_gen.output_files or {})
+                    new_file_count = len(files_to_save)
+                    
+                    # Warn if we lost significant number of files (80% threshold)
+                    if new_file_count < parent_file_count * 0.8:
+                        logger.warning(
+                            f"[Validation] Iteration result has {new_file_count} files but parent had {parent_file_count}. "
+                            f"Possible data loss detected! Expected at least {int(parent_file_count * 0.8)} files."
+                        )
+                        await _emit_event(generation_id, {
+                            "status": "warning",
+                            "stage": "validation",
+                            "message": f"⚠️ Warning: Expected ~{parent_file_count} files, got {new_file_count}. "
+                                       f"Some parent files may be missing.",
+                            "progress": 80,
+                            "warning_type": "data_loss_detection",
+                            "parent_file_count": parent_file_count,
+                            "new_file_count": new_file_count
+                        })
+                    else:
+                        logger.info(f"[Validation] Iteration validation passed: {new_file_count} files (parent had {parent_file_count})")
+            except Exception as validation_err:
+                logger.warning(f"[Validation] Could not validate iteration results: {validation_err}")
+        
         # Step 3: File Management and Storage
         file_metadata = await file_manager.save_generation_files(
             generation_id=generation_id,
-            files=result_dict.get("files", {})
+            files=files_to_save
         )
         
         # Create downloadable ZIP
-        zip_path = await file_manager.create_generation_zip(generation_id, user_id)
+        zip_path = await file_manager.create_zip_archive(generation_id)
         
         # Step 4: Record basic metrics (if enabled)
         if generation_config.use_metrics_tracking:
@@ -789,16 +1177,24 @@ async def _process_classic_generation(
         
         # Step 5: Update database with final result
         generation_repo = GenerationRepository(db)
-        await generation_repo.update(
-            generation_id,
-            status="completed",
-            result={
-                **result_dict,
-                "quality_metrics": quality_metrics.__dict__,
-                "file_metadata": file_metadata,
-                "download_url": f"/api/generations/{generation_id}/download"
+        
+        # Update progress with output files and metadata
+        await generation_repo.update_progress(
+            generation_id=generation_id,
+            stage_times={
+                "total": time.time() - start_time if 'start_time' in locals() else 0
             },
-            completed_at=datetime.utcnow()
+            output_files=result_dict.get("files", {}),
+            extracted_schema=result_dict.get("schema", {}),
+            review_feedback=result_dict.get("review_feedback", []),
+            documentation=result_dict.get("documentation", {})
+        )
+        
+        # Update status to completed with quality score
+        await generation_repo.update_status(
+            generation_id=generation_id,
+            status="completed",
+            quality_score=quality_metrics.overall_score
         )
         
         # Final success event
@@ -871,11 +1267,16 @@ async def _process_classic_generation(
 
 async def _emit_event(generation_id: str, event_data: Dict[str, Any]):
     """Emit an event for streaming"""
+    logger.info(f"🔔 [_emit_event] gen={generation_id[:8]}..., stage={event_data.get('stage')}, progress={event_data.get('progress')}")
+    
     if generation_id not in generation_events:
         generation_events[generation_id] = []
+        logger.info(f"📝 [_emit_event] Created new event list for {generation_id[:8]}...")
     
     event_data["timestamp"] = time.time()
     generation_events[generation_id].append(event_data)
+    
+    logger.info(f"📊 [_emit_event] Total events stored: {len(generation_events[generation_id])}")
     
     # Keep only last 50 events to prevent memory bloat
     if len(generation_events[generation_id]) > 50:
@@ -1921,4 +2322,356 @@ async def compare_generations(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Comparison failed: {str(e)}"
+        )
+
+
+# ============================================================================
+# VERSION MANAGEMENT ENDPOINTS (NEW)
+# ============================================================================
+
+@router.get(
+    "/projects/{project_id}/versions",
+    response_model=VersionListResponse,
+    summary="List all generation versions for a project",
+    description="Get all versions of generations for a specific project with lightweight metadata"
+)
+async def list_project_versions(
+    project_id: str,
+    include_failed: bool = Query(False, description="Include failed generations"),
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """List all generation versions for a project"""
+    try:
+        # Verify project exists and user has access
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(project_id)
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_id} not found"
+            )
+        
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this project"
+            )
+        
+        # Use GenerationService to list versions
+        generation_service = GenerationService(db, file_manager)
+        generations = await generation_service.list_project_generations(
+            project_id,
+            include_failed=include_failed
+        )
+        
+        # Convert to summary format
+        version_summaries = [
+            GenerationSummary(
+                id=str(gen.id),
+                version=gen.version,
+                version_name=gen.version_name,
+                status=gen.status,
+                is_active=gen.is_active or False,
+                file_count=gen.file_count,
+                total_size_bytes=gen.total_size_bytes,
+                quality_score=gen.quality_score,
+                created_at=gen.created_at,
+                prompt_preview=gen.prompt[:100] if gen.prompt else ""
+            )
+            for gen in generations
+        ]
+        
+        return VersionListResponse(
+            project_id=project_id,
+            total_versions=len(version_summaries),
+            active_version=project.active_generation.version if project.active_generation else None,
+            versions=version_summaries,
+            latest_version=project.latest_version
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list project versions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list versions: {str(e)}"
+        )
+
+
+@router.get(
+    "/projects/{project_id}/versions/{version}",
+    response_model=GenerationResponse,
+    summary="Get a specific version of a generation",
+    description="Retrieve a generation by its version number within a project"
+)
+async def get_generation_by_version(
+    project_id: str,
+    version: int,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Get a specific version of a generation"""
+    try:
+        # Verify project exists and user has access
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(project_id)
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_id} not found"
+            )
+        
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this project"
+            )
+        
+        # Use GenerationService to get version
+        generation_service = GenerationService(db, file_manager)
+        generation = await generation_service.get_generation_by_version(
+            project_id,
+            version
+        )
+        
+        if not generation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Version {version} not found for project {project_id}"
+            )
+        
+        return GenerationResponse.model_validate(generation)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get generation by version: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get version: {str(e)}"
+        )
+
+
+@router.get(
+    "/projects/{project_id}/versions/active",
+    response_model=GenerationResponse,
+    summary="Get the active generation for a project",
+    description="Retrieve the currently active generation for a project"
+)
+async def get_active_generation(
+    project_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Get the active generation for a project"""
+    try:
+        # Verify project exists and user has access
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(project_id)
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_id} not found"
+            )
+        
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this project"
+            )
+        
+        # Use GenerationService to get active generation
+        generation_service = GenerationService(db, file_manager)
+        generation = await generation_service.get_active_generation(project_id)
+        
+        if not generation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No active generation found for project {project_id}"
+            )
+        
+        return GenerationResponse.model_validate(generation)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get active generation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get active generation: {str(e)}"
+        )
+
+
+@router.post(
+    "/projects/{project_id}/versions/{generation_id}/activate",
+    response_model=ActivateGenerationResponse,
+    summary="Activate a specific generation",
+    description="Set a generation as the active version for the project"
+)
+async def activate_generation(
+    project_id: str,
+    generation_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Activate a specific generation as the active version"""
+    try:
+        # Verify project exists and user has access
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(project_id)
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_id} not found"
+            )
+        
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this project"
+            )
+        
+        # Verify generation exists and belongs to project
+        generation_repo = GenerationRepository(db)
+        generation = await generation_repo.get_by_id(generation_id)
+        
+        if not generation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Generation {generation_id} not found"
+            )
+        
+        if generation.project_id != project_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Generation {generation_id} does not belong to project {project_id}"
+            )
+        
+        if generation.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Can only activate completed generations"
+            )
+        
+        # Store previous active generation ID
+        previous_active_id = str(project.active_generation_id) if project.active_generation_id else None
+        
+        # Use GenerationService to set active generation
+        generation_service = GenerationService(db, file_manager)
+        await generation_service.set_active_generation(project_id, generation_id)
+        
+        # Refresh to get updated data
+        await db.refresh(generation)
+        await db.refresh(project)
+        
+        return ActivateGenerationResponse(
+            success=True,
+            generation_id=generation_id,
+            version=generation.version or 0,
+            message=f"Generation v{generation.version} activated successfully",
+            previous_active_id=previous_active_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to activate generation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to activate generation: {str(e)}"
+        )
+
+
+@router.get(
+    "/projects/{project_id}/versions/compare/{from_version}/{to_version}",
+    response_model=VersionComparisonResponse,
+    summary="Compare two versions",
+    description="Compare two generation versions and get detailed diff"
+)
+async def compare_versions(
+    project_id: str,
+    from_version: int,
+    to_version: int,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Compare two versions of generations within a project"""
+    try:
+        # Verify project exists and user has access
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get_by_id(project_id)
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {project_id} not found"
+            )
+        
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this project"
+            )
+        
+        # Use GenerationService to compare versions
+        generation_service = GenerationService(db, file_manager)
+        comparison = await generation_service.compare_generations(
+            project_id,
+            from_version,
+            to_version
+        )
+        
+        if not comparison:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Could not compare versions {from_version} and {to_version}"
+            )
+        
+        # Parse the comparison data
+        from_gen = comparison["from_generation"]
+        to_gen = comparison["to_generation"]
+        
+        # Calculate time difference
+        time_diff = (to_gen.created_at - from_gen.created_at).total_seconds()
+        
+        # Calculate metric changes
+        size_change = (to_gen.total_size_bytes or 0) - (from_gen.total_size_bytes or 0)
+        file_count_change = (to_gen.file_count or 0) - (from_gen.file_count or 0)
+        quality_change = None
+        if from_gen.quality_score and to_gen.quality_score:
+            quality_change = to_gen.quality_score - from_gen.quality_score
+        
+        return VersionComparisonResponse(
+            project_id=project_id,
+            from_version=from_version,
+            to_version=to_version,
+            from_generation_id=str(from_gen.id),
+            to_generation_id=str(to_gen.id),
+            files_added=comparison.get("files_added", []),
+            files_removed=comparison.get("files_removed", []),
+            files_modified=comparison.get("files_modified", []),
+            files_unchanged=comparison.get("files_unchanged", []),
+            size_change_bytes=size_change,
+            file_count_change=file_count_change,
+            quality_score_change=quality_change,
+            unified_diff=comparison.get("diff", ""),
+            diff_summary=comparison.get("summary", "No changes"),
+            time_between_versions=time_diff,
+            created_at_from=from_gen.created_at,
+            created_at_to=to_gen.created_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to compare versions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to compare versions: {str(e)}"
         )

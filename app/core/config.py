@@ -55,6 +55,38 @@ class Settings(BaseSettings):
     HF_TOKEN: Optional[str] = None
     HUGGINGFACE_API_KEY: Optional[str] = Field(None, alias="HF_TOKEN")  # Alias for compatibility
     
+    # LLM Provider Configuration
+    LLM_PROVIDER: str = "huggingface"  # Options: "huggingface", "gemini", "hybrid"
+    
+    # Task-specific provider overrides (None = use LLM_PROVIDER)
+    SCHEMA_EXTRACTION_PROVIDER: Optional[str] = None  # Override for schema extraction
+    CODE_GENERATION_PROVIDER: Optional[str] = None  # Override for code generation
+    CODE_REVIEW_PROVIDER: Optional[str] = None  # Override for code review
+    DOCUMENTATION_PROVIDER: Optional[str] = None  # Override for documentation
+    
+    # Google Gemini Configuration
+    GOOGLE_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.0-flash-exp"  # or "gemini-2.5-pro" when available
+    GEMINI_TEMPERATURE: float = 0.7
+    GEMINI_MAX_OUTPUT_TOKENS: int = 8192
+    GEMINI_TOP_P: float = 0.95
+    GEMINI_TOP_K: int = 40
+    
+    # Gemini Safety Settings (BLOCK_NONE for code generation)
+    GEMINI_SAFETY_HARASSMENT: str = "BLOCK_NONE"
+    GEMINI_SAFETY_HATE_SPEECH: str = "BLOCK_NONE"
+    GEMINI_SAFETY_SEXUALLY_EXPLICIT: str = "BLOCK_NONE"
+    GEMINI_SAFETY_DANGEROUS_CONTENT: str = "BLOCK_NONE"
+    
+    # Phased Generation Configuration
+    USE_PHASED_GENERATION: bool = True  # Enable phased generation for complex projects
+    PHASED_GENERATION_ENTITY_THRESHOLD: int = 3  # Use phased if entity count >= this
+    FORCE_REPOSITORY_PATTERN: bool = True  # Always use repository pattern in phased mode
+    PHASED_GENERATION_TIMEOUT: int = 300  # Timeout per phase in seconds
+    
+    # Hybrid Mode Configuration
+    ENABLE_HYBRID_LLM_MODE: bool = False  # Use different providers for different tasks
+    
     # AI Model Configuration
     MAX_NEW_TOKENS: int = 4096
     TEMPERATURE: float = 0.7

@@ -94,6 +94,16 @@ class GenerationResponse(BaseModel):
     is_iteration: bool = False
     parent_generation_id: Optional[str] = None
     
+    # Version tracking (NEW)
+    version: Optional[int] = Field(None, description="Version number within the project")
+    version_name: Optional[str] = Field(None, description="Custom version name/tag")
+    is_active: Optional[bool] = Field(False, description="Whether this is the active generation")
+    storage_path: Optional[str] = Field(None, description="Hierarchical storage path")
+    file_count: Optional[int] = Field(None, description="Number of files in generation")
+    total_size_bytes: Optional[int] = Field(None, description="Total size in bytes")
+    diff_from_previous: Optional[str] = Field(None, description="Diff from previous version")
+    changes_summary: Optional[Dict[str, Any]] = Field(None, description="Summary of changes from previous version")
+    
     # Relationships
     artifacts: List[ArtifactResponse] = []
     
@@ -273,3 +283,76 @@ class GenerationComparisonResponse(BaseModel):
     file_comparisons: List[FileComparison]
     metrics_comparison: Dict[str, Any]
     recommendations: List[str]
+
+
+# ============================================================================
+# VERSION MANAGEMENT SCHEMAS (NEW)
+# ============================================================================
+
+class GenerationSummary(BaseModel):
+    """Lightweight generation summary for list endpoints"""
+    id: str
+    version: Optional[int] = None
+    version_name: Optional[str] = None
+    status: GenerationStatus
+    is_active: bool = False
+    file_count: Optional[int] = None
+    total_size_bytes: Optional[int] = None
+    quality_score: Optional[float] = None
+    created_at: datetime
+    prompt_preview: str = Field(..., description="First 100 chars of prompt")
+    
+    class Config:
+        from_attributes = True
+
+
+class VersionListResponse(BaseModel):
+    """Response for listing all versions of a project"""
+    project_id: str
+    total_versions: int
+    active_version: Optional[int] = None
+    versions: List[GenerationSummary]
+    latest_version: Optional[int] = None
+
+
+class ActivateGenerationRequest(BaseModel):
+    """Request to activate a specific generation"""
+    generation_id: str = Field(..., description="Generation ID to activate")
+
+
+class ActivateGenerationResponse(BaseModel):
+    """Response after activating a generation"""
+    success: bool
+    generation_id: str
+    version: int
+    message: str
+    previous_active_id: Optional[str] = None
+
+
+class VersionComparisonResponse(BaseModel):
+    """Response for comparing two versions"""
+    project_id: str
+    from_version: int
+    to_version: int
+    from_generation_id: str
+    to_generation_id: str
+    
+    # File-level changes
+    files_added: List[str] = []
+    files_removed: List[str] = []
+    files_modified: List[str] = []
+    files_unchanged: List[str] = []
+    
+    # Metrics
+    size_change_bytes: int
+    file_count_change: int
+    quality_score_change: Optional[float] = None
+    
+    # Diff content
+    unified_diff: Optional[str] = Field(None, description="Unified diff patch")
+    diff_summary: str
+    
+    # Metadata
+    time_between_versions: float = Field(..., description="Seconds between version creation")
+    created_at_from: datetime
+    created_at_to: datetime
