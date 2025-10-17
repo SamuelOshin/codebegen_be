@@ -49,6 +49,11 @@ class ProjectResponse(ProjectBase):
     created_at: datetime
     updated_at: datetime
     
+    # Auto-creation fields
+    auto_created: bool = Field(default=False, description="Whether project was auto-created")
+    creation_source: Optional[str] = Field(None, description="Source of project creation")
+    original_prompt: Optional[str] = Field(None, description="Original prompt for auto-created projects")
+    
     # Computed fields
     generation_count: int = Field(default=0, description="Number of generations for this project")
     last_generation_at: Optional[datetime] = Field(None, description="Last generation timestamp")

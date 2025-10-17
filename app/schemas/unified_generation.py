@@ -84,6 +84,11 @@ class UnifiedGenerationResponse(BaseModel):
     prompt: str
     context: Dict[str, Any] = Field(default_factory=dict)
     
+    # Auto-created project metadata (new)
+    auto_created_project: Optional[bool] = Field(None, description="Whether project was auto-created")
+    project_name: Optional[str] = Field(None, description="Name of auto-created or existing project")
+    project_domain: Optional[str] = Field(None, description="Domain of the project")
+    
     # Generation results
     files: Optional[Dict[str, str]] = None
     output_files: Optional[Dict[str, Any]] = None
