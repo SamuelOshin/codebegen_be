@@ -741,6 +741,17 @@ async def _process_enhanced_generation(
                 })
 
                 # Use AI orchestrator directly
+                # ✅ FIX 5: Fetch parent files for iteration
+                parent_files = None
+                if request.is_iteration and request.parent_generation_id:
+                    try:
+                        parent_gen = await generation_repo.get_by_id(request.parent_generation_id)
+                        if parent_gen:
+                            parent_files = parent_gen.output_files or {}
+                            logger.info(f"[Enhanced] Fetched {len(parent_files)} parent files for iteration")
+                    except Exception as fetch_err:
+                        logger.warning(f"[Enhanced] Could not fetch parent files: {fetch_err}")
+                
                 generation_result = await ai_orchestrator.process_generation(
                     generation_id,
                     {
@@ -749,7 +760,10 @@ async def _process_enhanced_generation(
                             **request.context,
                             "tech_stack": request.tech_stack or "fastapi_postgres",
                             "domain": request.domain,
-                            "constraints": request.constraints
+                            "constraints": request.constraints,
+                            "is_iteration": request.is_iteration,  # ✅ FIX 3: Propagate iteration flag
+                            "parent_generation_id": request.parent_generation_id,  # ✅ FIX 3: Propagate parent ID
+                            "parent_files": parent_files,  # ✅ FIX 5: Include parent files
                         },
                         "user_id": user_id,
                         "use_enhanced_prompts": False
@@ -1006,6 +1020,17 @@ async def _process_classic_generation(
         
         # For now, let's use a simpler approach that generates the result directly
         try:
+            # ✅ FIX 4: Fetch parent files for iteration
+            parent_files = None
+            if request.is_iteration and request.parent_generation_id:
+                try:
+                    parent_gen = await generation_repo.get_by_id(request.parent_generation_id)
+                    if parent_gen:
+                        parent_files = parent_gen.output_files or {}
+                        logger.info(f"[Classic] Fetched {len(parent_files)} parent files for iteration")
+                except Exception as fetch_err:
+                    logger.warning(f"[Classic] Could not fetch parent files: {fetch_err}")
+            
             # Create a GenerationRequest object for the orchestrator
             from app.services.ai_orchestrator import GenerationRequest
             orchestrator_request = GenerationRequest(
@@ -1015,7 +1040,10 @@ async def _process_classic_generation(
                     "tech_stack": request.tech_stack or "fastapi_postgres",
                     "domain": request.domain,
                     "constraints": request.constraints,
-                    "generation_mode": "classic"
+                    "generation_mode": "classic",
+                    "is_iteration": request.is_iteration,  # ✅ FIX 2: Propagate iteration flag
+                    "parent_generation_id": request.parent_generation_id,  # ✅ FIX 2: Propagate parent ID
+                    "parent_files": parent_files,  # ✅ FIX 4: Include parent files in context
                 },
                 user_id=user_id,
                 use_enhanced_prompts=False
@@ -1078,10 +1106,40 @@ async def _process_classic_generation(
             "generation_mode": generation_config.mode
         })
         
+        # ✅ FIX 7: Validate iteration results to detect data loss
+        files_to_save = result_dict.get("files", {})
+        if request.is_iteration and request.parent_generation_id:
+            try:
+                parent_gen = await generation_repo.get_by_id(request.parent_generation_id)
+                if parent_gen:
+                    parent_file_count = len(parent_gen.output_files or {})
+                    new_file_count = len(files_to_save)
+                    
+                    # Warn if we lost significant number of files (80% threshold)
+                    if new_file_count < parent_file_count * 0.8:
+                        logger.warning(
+                            f"[Validation] Iteration result has {new_file_count} files but parent had {parent_file_count}. "
+                            f"Possible data loss detected! Expected at least {int(parent_file_count * 0.8)} files."
+                        )
+                        await _emit_event(generation_id, {
+                            "status": "warning",
+                            "stage": "validation",
+                            "message": f"⚠️ Warning: Expected ~{parent_file_count} files, got {new_file_count}. "
+                                       f"Some parent files may be missing.",
+                            "progress": 80,
+                            "warning_type": "data_loss_detection",
+                            "parent_file_count": parent_file_count,
+                            "new_file_count": new_file_count
+                        })
+                    else:
+                        logger.info(f"[Validation] Iteration validation passed: {new_file_count} files (parent had {parent_file_count})")
+            except Exception as validation_err:
+                logger.warning(f"[Validation] Could not validate iteration results: {validation_err}")
+        
         # Step 3: File Management and Storage
         file_metadata = await file_manager.save_generation_files(
             generation_id=generation_id,
-            files=result_dict.get("files", {})
+            files=files_to_save
         )
         
         # Create downloadable ZIP
