@@ -50,6 +50,7 @@
 - **SQLAlchemy 2.0** - Modern ORM with async support
 - **Alembic** - Database migrations and schema management
 - **Redis** - Caching and background task management
+- **Supabase Storage** - Optional cloud storage for generated projects (hybrid local/cloud approach)
 
 ### AI & Machine Learning
 - **Qwen2.5-Coder-32B** - Primary code generation model
@@ -117,6 +118,33 @@ poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 The API will be available at `http://localhost:8000` with interactive documentation at `http://localhost:8000/docs`.
 
+### Optional: Supabase Cloud Storage Setup
+
+CodebeGen supports optional cloud storage via Supabase for scalable project file storage.
+
+1. **Create a Supabase project** at [supabase.com](https://supabase.com)
+
+2. **Configure environment variables**
+```bash
+# Add to .env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-role-key
+USE_CLOUD_STORAGE=true
+```
+
+3. **Migrate existing projects (optional)**
+```bash
+# Preview migration
+poetry run python scripts/migrate_to_supabase.py --dry-run
+
+# Perform migration
+poetry run python scripts/migrate_to_supabase.py
+```
+
+For detailed setup instructions, see [docs/STORAGE_SETUP.md](docs/STORAGE_SETUP.md).
+
+**Note**: Cloud storage is optional. The system works perfectly with local-only storage by setting `USE_CLOUD_STORAGE=false`.
+
 ## 📁 Project Structure
 
 ```
@@ -159,6 +187,9 @@ codebegen_be/
 │   │   ├── ai_orchestrator.py   # AI pipeline coordination
 │   │   ├── generation_service.py # Generation management & versioning
 │   │   ├── file_manager.py      # Hierarchical file storage management
+│   │   ├── supabase_storage_service.py # Cloud storage integration
+│   │   ├── storage_manager.py   # Hybrid local/cloud storage manager
+│   │   ├── storage_integration_helper.py # Storage integration helper
 │   │   ├── code_generator.py    # Code generation service
 │   │   ├── code_reviewer.py     # Code review service
 │   │   ├── docs_generator.py    # Documentation service
@@ -198,6 +229,7 @@ codebegen_be/
 ├── scripts/                      # Utility scripts
 │   ├── migrate.py               # Database migration runner
 │   ├── seed_data.py             # Sample data seeder
+│   └── migrate_to_supabase.py   # Supabase migration script
 │   └── setup.py                 # Environment setup
 ├── storage/                      # File storage with hierarchical structure
 │   └── projects/                 # Project-specific storage
