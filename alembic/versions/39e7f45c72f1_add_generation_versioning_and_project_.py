@@ -21,8 +21,8 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema - Add version tracking to generations and active generation tracking to projects."""
     
-    # Add new columns to generations table
-    op.add_column('generations', sa.Column('version', sa.Integer(), nullable=False, server_default='1'))
+    # Add new columns to generations table (version starts as nullable to allow UPDATE)
+    op.add_column('generations', sa.Column('version', sa.Integer(), nullable=True))
     op.add_column('generations', sa.Column('version_name', sa.String(length=50), nullable=True))
     op.add_column('generations', sa.Column('is_active', sa.Boolean(), nullable=False, server_default='false'))
     op.add_column('generations', sa.Column('storage_path', sa.String(length=500), nullable=True))
@@ -58,6 +58,9 @@ def upgrade() -> None:
         ) subq
         WHERE g.id = subq.id
     """)
+    
+    # Set version to NOT NULL after data migration
+    op.alter_column('generations', 'version', existing_type=sa.Integer(), nullable=False)
     
     # Update projects with latest_version based on their generations
     op.execute("""

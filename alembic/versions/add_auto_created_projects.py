@@ -1,3 +1,4 @@
+
 """Add auto_created fields to projects table
 
 Revision ID: add_auto_created_projects
@@ -11,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'add_auto_created_projects'
-down_revision = '39e7f45c72f1'  # Update this with your latest migration
+down_revision = '39e7f45c72f1'  # Correctly points to the versioning migration
 branch_labels = None
 depends_on = None
 
