@@ -30,6 +30,14 @@
 - **GitHub Integration**: Direct repository creation and deployment
 - **Quality Assurance**: Automated code review and quality scoring
 
+### 📊 Version Tracking & Management
+- **Hierarchical Storage**: Organized file structure with project/version separation
+- **Generation History**: Track multiple iterations with automatic versioning
+- **Active Generation Management**: Switch between different versions seamlessly
+- **Diff Generation**: Compare changes between versions with detailed file differences
+- **Metadata Tracking**: Store generation statistics, file counts, and change summaries
+- **Backward Compatibility**: Support for existing flat storage structure
+
 ## 🛠️ Technology Stack
 
 ### Backend Framework
@@ -149,6 +157,8 @@ codebegen_be/
 │   │   └── ai.py                # AI request/response schemas
 │   ├── services/                 # Business logic layer
 │   │   ├── ai_orchestrator.py   # AI pipeline coordination
+│   │   ├── generation_service.py # Generation management & versioning
+│   │   ├── file_manager.py      # Hierarchical file storage management
 │   │   ├── code_generator.py    # Code generation service
 │   │   ├── code_reviewer.py     # Code review service
 │   │   ├── docs_generator.py    # Documentation service
@@ -189,6 +199,16 @@ codebegen_be/
 │   ├── migrate.py               # Database migration runner
 │   ├── seed_data.py             # Sample data seeder
 │   └── setup.py                 # Environment setup
+├── storage/                      # File storage with hierarchical structure
+│   └── projects/                 # Project-specific storage
+│       └── {project_id}/         # Individual project directory
+│           ├── generations/      # Version-tracked generations
+│           │   ├── v1__{gen_id}/ # Version 1 generation files
+│           │   │   ├── source/   # Generated source code
+│           │   │   └── manifest.json # Generation metadata
+│           │   ├── v2__{gen_id}/ # Version 2 generation files
+│           │   └── active -> v2__{gen_id} # Symlink to active version
+│           └── legacy/           # Backward compatibility for old flat storage
 └── requirements/                 # Dependency files
     ├── base.txt                 # Core dependencies
     ├── dev.txt                  # Development dependencies
@@ -218,6 +238,13 @@ codebegen_be/
 - `GET /generations/{id}/stream` - Stream generation progress
 - `POST /generations/{id}/iterate` - Iterate on generation
 - `GET /generations/{id}/files` - Download generated files
+
+### Version Management
+- `GET /projects/{project_id}/generations` - List all versions for a project
+- `GET /projects/{project_id}/generations/{version}` - Get specific version details
+- `GET /projects/{project_id}/generations/active` - Get active generation
+- `POST /projects/{project_id}/generations/{generation_id}/activate` - Set active generation
+- `GET /projects/{project_id}/generations/compare/{from_version}/{to_version}` - Compare two versions
 
 ### AI Services
 - `POST /ai/generate` - Generate project from prompt

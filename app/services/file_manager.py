@@ -1,14 +1,21 @@
 """
 File management service for handling generated project files.
 Manages file creation, storage, compression, and delivery.
+
+Enhanced with hierarchical storage structure:
+- New: ./storage/projects/{project_id}/generations/v{version}__{generation_id}/
+- Old: ./storage/projects/{generation_id}/ (backward compatible)
 """
 
 import os
+import sys
 import shutil
 import zipfile
 import tempfile
 import asyncio
 import logging
+import json
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
@@ -20,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class FileManager:
-    """Manages generated project files and storage."""
+    """Manages generated project files and storage with hierarchical structure."""
     
     def __init__(self):
         self.storage_path = Path(settings.FILE_STORAGE_PATH)
@@ -30,6 +37,345 @@ class FileManager:
         # Ensure directories exist
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.temp_path.mkdir(parents=True, exist_ok=True)
+    
+    # ==================== NEW: Hierarchical Storage Methods ====================
+    
+    async def save_generation_files_hierarchical(
+        self,
+        project_id: str,
+        generation_id: str,
+        version: int,
+        files: Dict[str, str],
+        metadata: Optional[Dict] = None
+    ) -> Tuple[str, int, int]:
+        """
+        Save generation files with hierarchical project/version structure.
+        
+        New structure: ./storage/projects/{project_id}/generations/v{version}__{generation_id}/
+        
+        Hierarchical storage design:
+        - Project-level isolation: Each project gets its own directory
+        - Version tracking: Clear version numbers (v1, v2, v3...) in directory names
+        - Generation identification: UUID suffix ensures uniqueness within versions
+        - Symlink support: 'active' symlink points to current version directory
+        - Metadata persistence: manifest.json stores generation statistics and context
+        
+        Args:
+            project_id: Project UUID
+            generation_id: Generation UUID
+            version: Version number (1, 2, 3...)
+            files: Dictionary mapping file paths to content
+            metadata: Optional metadata to include in manifest
+            
+        Returns:
+            Tuple of (storage_path, file_count, total_size_bytes)
+        """
+        try:
+            # Create hierarchical path
+            generation_dir = self.storage_path / project_id / "generations" / f"v{version}__{generation_id}"
+            source_dir = generation_dir / "source"
+            artifacts_dir = generation_dir / "artifacts"
+            
+            # Create directories
+            source_dir.mkdir(parents=True, exist_ok=True)
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Calculate file stats
+            file_count = len(files)
+            total_size_bytes = sum(len(content.encode('utf-8')) for content in files.values())
+            
+            # Create manifest.json
+            manifest = {
+                "generation_id": generation_id,
+                "project_id": project_id,
+                "version": version,
+                "created_at": datetime.utcnow().isoformat(),
+                "file_count": file_count,
+                "total_size_bytes": total_size_bytes,
+                "files": list(files.keys()),
+                "metadata": metadata or {}
+            }
+            manifest_path = generation_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+            
+            # Save source files
+            for file_path, content in files.items():
+                full_path = source_dir / file_path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding='utf-8')
+            
+            logger.info(f"✅ Saved generation v{version} for project {project_id} ({file_count} files, {total_size_bytes:,} bytes)")
+            return str(generation_dir), file_count, total_size_bytes
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving hierarchical generation files: {e}")
+            raise
+    
+    async def create_generation_diff(
+        self,
+        project_id: str,
+        from_version: int,
+        to_version: int
+    ) -> Optional[str]:
+        """
+        Create diff between two generation versions.
+        
+        Args:
+            project_id: Project UUID
+            from_version: Source version number
+            to_version: Target version number
+            
+        Returns:
+            Path to diff file or None if error
+        """
+        try:
+            # Find generation directories
+            generations_dir = self.storage_path / project_id / "generations"
+            if not generations_dir.exists():
+                logger.warning(f"Generations directory not found for project {project_id}")
+                return None
+            
+            from_dirs = list(generations_dir.glob(f"v{from_version}__*"))
+            to_dirs = list(generations_dir.glob(f"v{to_version}__*"))
+            
+            if not from_dirs or not to_dirs:
+                logger.warning(f"Could not find versions {from_version} or {to_version} for project {project_id}")
+                return None
+            
+            from_dir = from_dirs[0] / "source"
+            to_dir = to_dirs[0] / "source"
+            
+            # Check if diff command is available
+            diff_available = shutil.which("diff") is not None
+            
+            if diff_available:
+                # Use system diff command (Unix/Linux/Git Bash)
+                result = subprocess.run(
+                    ["diff", "-ru", str(from_dir), str(to_dir)],
+                    capture_output=True,
+                    text=True
+                )
+                diff_content = result.stdout
+            else:
+                # Fallback: Simple file-by-file comparison
+                diff_content = await self._create_simple_diff(from_dir, to_dir)
+            
+            # Save diff file
+            diff_path = to_dirs[0] / f"diff_from_v{from_version}.patch"
+            diff_path.write_text(diff_content, encoding='utf-8')
+            
+            logger.info(f"✅ Created diff from v{from_version} to v{to_version} for project {project_id}")
+            return str(diff_path)
+            
+        except Exception as e:
+            logger.error(f"❌ Error creating diff: {e}")
+            return None
+    
+    async def _create_simple_diff(self, from_dir: Path, to_dir: Path) -> str:
+        """Create a simple diff when system diff is not available."""
+        diff_lines = []
+        diff_lines.append(f"=== Diff from {from_dir.name} to {to_dir.name} ===\n")
+        
+        # Get all files from both directories
+        from_files = {f.relative_to(from_dir): f for f in from_dir.rglob('*') if f.is_file()}
+        to_files = {f.relative_to(to_dir): f for f in to_dir.rglob('*') if f.is_file()}
+        
+        # Added files
+        added = set(to_files.keys()) - set(from_files.keys())
+        if added:
+            diff_lines.append(f"\n📄 Added files ({len(added)}):\n")
+            for file in sorted(added):
+                diff_lines.append(f"  + {file}\n")
+        
+        # Removed files
+        removed = set(from_files.keys()) - set(to_files.keys())
+        if removed:
+            diff_lines.append(f"\n📄 Removed files ({len(removed)}):\n")
+            for file in sorted(removed):
+                diff_lines.append(f"  - {file}\n")
+        
+        # Modified files (simple content comparison)
+        common = set(from_files.keys()) & set(to_files.keys())
+        modified = []
+        for file in common:
+            try:
+                from_content = from_files[file].read_text(encoding='utf-8')
+                to_content = to_files[file].read_text(encoding='utf-8')
+                if from_content != to_content:
+                    modified.append(file)
+            except:
+                pass  # Skip binary files
+        
+        if modified:
+            diff_lines.append(f"\n📝 Modified files ({len(modified)}):\n")
+            for file in sorted(modified):
+                diff_lines.append(f"  ~ {file}\n")
+        
+        return ''.join(diff_lines)
+    
+    async def set_active_generation_symlink(
+        self,
+        project_id: str,
+        generation_version: int
+    ) -> bool:
+        """
+        Update symlink to point to active generation.
+        
+        Note: On Windows, this creates a directory junction instead of a symlink.
+        
+        Args:
+            project_id: Project UUID
+            generation_version: Version number to set as active
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            generations_dir = self.storage_path / project_id / "generations"
+            if not generations_dir.exists():
+                logger.warning(f"Generations directory not found for project {project_id}")
+                return False
+            
+            active_link = generations_dir / "active"
+            
+            # Find target generation directory
+            target_dirs = list(generations_dir.glob(f"v{generation_version}__*"))
+            if not target_dirs:
+                logger.warning(f"Generation v{generation_version} not found for project {project_id}")
+                return False
+            
+            target_dir = target_dirs[0]
+            
+            # Remove old symlink/junction
+            if active_link.exists() or active_link.is_symlink():
+                try:
+                    if sys.platform == "win32":
+                        # Windows: remove junction
+                        subprocess.run(["rmdir", str(active_link)], shell=True, check=False)
+                    else:
+                        active_link.unlink()
+                except Exception as e:
+                    logger.warning(f"Could not remove old active link: {e}")
+            
+            # Create new symlink/junction
+            try:
+                if sys.platform == "win32":
+                    # Windows: create junction (doesn't require admin)
+                    subprocess.run(
+                        ["mklink", "/J", str(active_link), str(target_dir)],
+                        shell=True,
+                        check=True,
+                        capture_output=True
+                    )
+                else:
+                    # Unix: create symbolic link
+                    active_link.symlink_to(target_dir.name)
+                
+                logger.info(f"✅ Set active generation to v{generation_version} for project {project_id}")
+                return True
+            except Exception as e:
+                logger.warning(f"Could not create symlink (this is optional): {e}")
+                # Symlink creation is optional, don't fail
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Error setting active generation symlink: {e}")
+            return False
+    
+    async def cleanup_old_generations(
+        self,
+        project_id: str,
+        keep_latest: int = 5,
+        archive_age_days: int = 30
+    ) -> int:
+        """
+        Archive old generations, keep recent ones.
+        
+        Args:
+            project_id: Project UUID
+            keep_latest: Number of latest versions to keep
+            archive_age_days: Archive generations older than this
+            
+        Returns:
+            Number of archived generations
+        """
+        try:
+            project_dir = self.storage_path / project_id
+            generations_dir = project_dir / "generations"
+            archive_dir = project_dir / "archive"
+            
+            if not generations_dir.exists():
+                return 0
+            
+            # Get all generation directories sorted by version
+            gen_dirs = sorted(
+                [d for d in generations_dir.iterdir() if d.is_dir() and d.name.startswith("v") and "__" in d.name],
+                key=lambda p: int(p.name.split("__")[0][1:])
+            )
+            
+            archived_count = 0
+            cutoff_date = datetime.now() - timedelta(days=archive_age_days)
+            
+            # Keep latest N, archive the rest if old enough
+            for gen_dir in gen_dirs[:-keep_latest] if len(gen_dirs) > keep_latest else []:
+                age_days = (datetime.now() - datetime.fromtimestamp(gen_dir.stat().st_mtime)).days
+                
+                if age_days > archive_age_days:
+                    archive_dir.mkdir(exist_ok=True)
+                    archive_target = archive_dir / gen_dir.name
+                    
+                    shutil.move(str(gen_dir), str(archive_target))
+                    archived_count += 1
+                    logger.info(f"📦 Archived old generation: {gen_dir.name}")
+            
+            return archived_count
+            
+        except Exception as e:
+            logger.error(f"❌ Error cleaning up old generations: {e}")
+            return 0
+    
+    def _get_generation_dir(self, project_id: str, version: Optional[int] = None, generation_id: Optional[str] = None) -> Optional[Path]:
+        """
+        Get generation directory path (supports both old and new structures).
+        
+        Args:
+            project_id: Project UUID
+            version: Version number (for new structure)
+            generation_id: Generation UUID (for old structure or exact match)
+            
+        Returns:
+            Path to generation directory or None
+        """
+        try:
+            # Try new hierarchical structure first
+            if version is not None:
+                generations_dir = self.storage_path / project_id / "generations"
+                if generations_dir.exists():
+                    matching_dirs = list(generations_dir.glob(f"v{version}__*"))
+                    if matching_dirs:
+                        return matching_dirs[0]
+            
+            # Try old flat structure
+            if generation_id is not None:
+                old_path = self.storage_path / generation_id
+                if old_path.exists() and old_path.is_dir():
+                    return old_path
+            
+            # Try searching in new structure by generation_id
+            if generation_id is not None and project_id is not None:
+                generations_dir = self.storage_path / project_id / "generations"
+                if generations_dir.exists():
+                    matching_dirs = list(generations_dir.glob(f"*__{generation_id}"))
+                    if matching_dirs:
+                        return matching_dirs[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting generation directory: {e}")
+            return None
+    
+    # ==================== END: New Hierarchical Methods ====================
     
     async def create_project_structure(
         self, 
@@ -72,19 +418,42 @@ class FileManager:
             logger.error(f"Error creating project structure: {e}")
             raise
 
-    async def save_generation_files(self, generation_id: str, files: Dict[str, str]) -> bool:
+    async def save_generation_files(
+        self, 
+        generation_id: str, 
+        files: Dict[str, str],
+        project_id: Optional[str] = None,
+        version: Optional[int] = None
+    ) -> bool:
         """
         Save generated files to storage.
+        
+        Supports both old (flat) and new (hierarchical) storage structures:
+        - If project_id and version provided: use new hierarchical structure
+        - Otherwise: use old flat structure for backward compatibility
         
         Args:
             generation_id: Unique identifier for the generation
             files: Dictionary mapping file paths to content
+            project_id: Optional project UUID (for hierarchical storage)
+            version: Optional version number (for hierarchical storage)
             
         Returns:
             True if successful, False otherwise
         """
         try:
-            await self.create_project_structure(generation_id, files)
+            # Use new hierarchical structure if project_id and version provided
+            if project_id and version is not None:
+                await self.save_generation_files_hierarchical(
+                    project_id=project_id,
+                    generation_id=generation_id,
+                    version=version,
+                    files=files
+                )
+            else:
+                # Fall back to old flat structure
+                await self.create_project_structure(generation_id, files)
+            
             logger.info(f"Successfully saved {len(files)} files for generation {generation_id}")
             return True
         except Exception as e:
@@ -365,20 +734,36 @@ class FileManager:
             logger.error(f"Error validating project structure: {e}")
             return False, [f"Validation error: {e}"]
     
-    async def get_generation_directory(self, generation_id: str) -> Optional[Path]:
+    async def get_generation_directory(
+        self, 
+        generation_id: str,
+        project_id: Optional[str] = None,
+        version: Optional[int] = None
+    ) -> Optional[Path]:
         """
         Get the directory path for a generation.
         
+        Supports both old and new storage structures.
+        
         Args:
             generation_id: Unique identifier for the generation
+            project_id: Optional project UUID (for new structure)
+            version: Optional version number (for new structure)
             
         Returns:
             Path to generation directory or None if not found
         """
         try:
-            project_dir = self.storage_path / generation_id
-            if project_dir.exists() and project_dir.is_dir():
-                return project_dir
+            # Try using helper method which checks both structures
+            gen_dir = self._get_generation_dir(project_id, version, generation_id)
+            
+            if gen_dir and gen_dir.exists() and gen_dir.is_dir():
+                # For new structure, return the source directory
+                source_dir = gen_dir / "source"
+                if source_dir.exists():
+                    return source_dir
+                return gen_dir
+            
             return None
         except Exception as e:
             logger.error(f"Error getting generation directory: {e}")

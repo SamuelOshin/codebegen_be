@@ -55,8 +55,22 @@ class Generation(BaseModel):
     is_iteration: Mapped[bool] = mapped_column(default=False, nullable=False)
     parent_generation_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("generations.id"), nullable=True)
     
+    # Version tracking (new architecture)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    version_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=False, nullable=False)
+    
+    # File storage references (new architecture)
+    storage_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Path to generation folder
+    file_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_size_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Diff tracking (new architecture)
+    diff_from_previous: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Path to diff file
+    changes_summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # {"added": 5, "modified": 3, "deleted": 1}
+    
     # Relationships
-    project: Mapped["Project"] = relationship("Project", back_populates="generations")
+    project: Mapped["Project"] = relationship("Project", back_populates="generations", foreign_keys=[project_id])
     user: Mapped["User"] = relationship("User", back_populates="generations")
     artifacts: Mapped[List["Artifact"]] = relationship(
         "Artifact", back_populates="generation", cascade="all, delete-orphan"

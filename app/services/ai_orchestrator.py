@@ -2,26 +2,34 @@
 Orchestrates the multi-model AI pipeline with Enhanced Prompt Engineering:
 1. Context analysis and pattern matching
 2. Enhanced prompt generation
-3. Schema extraction (Llama-8B)
-4. Code generation (Qwen2.5-Coder-32B) with context
-5. Code review (Starcoder2-15B)
-6. Documentation (Mistral-7B)
-7. Memory-efficient fallback when resources are limited
+3. Schema extraction (Gemini or Llama-8B via provider)
+4. Code generation (Gemini or Qwen2.5-Coder-32B via provider)
+5. Code review (Gemini or Starcoder2-15B via provider)
+6. Documentation (Gemini or Mistral-7B via provider)
+7. Provider abstraction layer for flexible LLM switching
+
+Integrated with GenerationService for version tracking and hierarchical storage.
 """
 
 import asyncio
 import json
 import time
 import psutil
+import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 from app.core.config import settings
-from ai_models.model_loader import model_loader, ModelType
+from app.services.llm_providers import LLMProviderFactory, LLMTask
 from app.services.enhanced_prompt_system import (
     ContextAwareOrchestrator,
     create_enhanced_prompt_system
 )
+from app.services.generation_service import GenerationService
+from app.models.generation import Generation
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 @dataclass
 class EnhancedGenerationRequest:
@@ -50,9 +58,7 @@ class AIOrchestrator:
     def __init__(self):
         self.initialized = False
         self.enhanced_prompt_system: Optional[ContextAwareOrchestrator] = None
-        self.memory_efficient_service = None
-        self.memory_threshold_mb = 4096  # 4GB threshold for full AI models
-        self.qwen_generator = None  # Direct Qwen generator for inference mode
+        self.provider_factory = LLMProviderFactory
         
     async def _check_memory_availability(self) -> Dict[str, Any]:
         """Check if there's enough memory for full AI model pipeline"""
@@ -61,93 +67,35 @@ class AIOrchestrator:
         
         return {
             "available_mb": available_mb,
-            "can_use_full_ai": available_mb >= self.memory_threshold_mb,
             "memory_usage_percent": memory.percent,
-            "force_inference": settings.FORCE_INFERENCE_MODE
+            "llm_provider": settings.LLM_PROVIDER
         }
 
     async def initialize(self):
-        """Load AI services with Qwen Inference as default for memory-constrained environments"""
+        """Initialize AI orchestrator with provider abstraction layer"""
         if self.initialized:
             return
             
-        print("Initializing Enhanced AI Orchestrator...")
+        print("Initializing AI Orchestrator with Provider Abstraction...")
         
-        # Check memory availability and forced inference mode
+        # Check memory availability
         memory_info = await self._check_memory_availability()
         print(f"💾 Available memory: {memory_info['available_mb']:,}MB")
+        print(f"🤖 LLM Provider: {settings.LLM_PROVIDER}")
         
-        # Force Qwen Inference mode if configured or memory-constrained
-        if settings.FORCE_INFERENCE_MODE or not memory_info["can_use_full_ai"]:
-            await self._initialize_qwen_inference_mode()
-        else:
-            await self._initialize_full_pipeline()
-            
+        # Initialize providers
+        try:
+            await self.provider_factory.initialize_all_providers()
+            print("✅ LLM providers initialized successfully")
+        except Exception as e:
+            print(f"⚠️  Provider initialization warning: {e}")
+            print("📝 Will initialize providers on-demand")
+        
+        # Initialize enhanced prompt system
+        await self._initialize_enhanced_prompt_system()
+        
         self.initialized = True
-        print("Enhanced AI Orchestrator initialized successfully")
-
-    async def _initialize_qwen_inference_mode(self):
-        """Initialize with Qwen HF Inference API as primary generator"""
-        print("⚡ Using Qwen Inference mode for memory efficiency")
-        
-        try:
-            # Initialize Qwen generator for direct inference
-            from ai_models.qwen_generator import QwenGenerator
-            self.qwen_generator = QwenGenerator(model_path=settings.QWEN_LARGE_MODEL_PATH)
-            await self.qwen_generator.load()
-            print("✅ Qwen Inference API initialized")
-            
-            # Initialize memory-efficient service as backup
-            from app.services.memory_efficient_service import memory_efficient_service
-            self.memory_efficient_service = memory_efficient_service
-            await self.memory_efficient_service.initialize()
-            print("✅ Memory-efficient service initialized")
-            
-            # Initialize lightweight enhanced prompt system
-            await self._initialize_enhanced_prompt_system()
-            
-        except Exception as e:
-            print(f"⚠️  Qwen Inference initialization failed: {e}")
-            print("📝 Using memory-efficient generation")
-
-    async def _initialize_full_pipeline(self):
-        """Initialize full AI pipeline with all models"""
-        print("🚀 Sufficient memory detected, loading full AI models...")
-        
-        try:
-            # Always initialize memory-efficient service as fallback
-            from app.services.memory_efficient_service import memory_efficient_service
-            self.memory_efficient_service = memory_efficient_service
-            await self.memory_efficient_service.initialize()
-            print("✅ Memory-efficient service initialized")
-            
-            # Preload critical models (Qwen for generation, Llama for parsing)
-            await model_loader.preload_models([
-                ModelType.QWEN_GENERATOR,
-                ModelType.LLAMA_PARSER
-            ])
-            print("✅ Full AI models loaded successfully")
-            
-            # Initialize enhanced prompt system
-            await self._initialize_enhanced_prompt_system()
-            
-            # Mark as initialized when full pipeline setup completes
-            self.initialized = True
-            print("Enhanced AI Orchestrator initialized successfully")
-            
-        except Exception as e:
-            # If any part of the full pipeline fails, fall back to memory-efficient generation
-            print(f"⚠️  Full AI model loading failed: {e}")
-            print("📝 Falling back to memory-efficient generation")
-            try:
-                if self.memory_efficient_service:
-                    await self.memory_efficient_service.initialize()
-                    print("✅ Memory-efficient service initialized as fallback")
-            except Exception as fallback_e:
-                print(f"⚠️  Failed to initialize memory-efficient fallback: {fallback_e}")
-            # Consider orchestrator initialized with fallback to ensure the system can continue
-            self.initialized = True
-            print("Enhanced AI Orchestrator initialized with memory-efficient fallback")
+        print("✅ AI Orchestrator initialized successfully")
 
     async def _initialize_enhanced_prompt_system(self):
         """Initialize the enhanced prompt system with repositories"""
@@ -311,20 +259,47 @@ class AIOrchestrator:
                 await db_error.close()
             raise
 
-    async def process_generation(self, generation_id: str, generation_data: dict):
+    async def process_generation(self, generation_id: str, generation_data: dict, file_manager: Any = None, event_callback: Any = None):
         """
-        Legacy method - redirects to enhanced generation if available
+        Process generation using GenerationService for version tracking.
+        
+        This method now integrates with GenerationService to:
+        - Use hierarchical storage structure
+        - Track version numbers automatically
+        - Create diffs between versions
+        - Set active generation
+        
+        Args:
+            generation_id: Unique ID for this generation
+            generation_data: Request data with prompt, context, etc.
+            file_manager: FileManager instance for incremental file saving
         """
         # Check if enhanced processing is requested and available
         if (generation_data.get("use_enhanced_prompts", True) and 
             self.enhanced_prompt_system is not None):
-            return await self.process_enhanced_generation(generation_id, generation_data)
+            return await self._process_with_generation_service(generation_id, generation_data, file_manager, enhanced=True, event_callback=event_callback)
         else:
-            return await self._process_basic_generation(generation_id, generation_data)
-
-    async def _process_basic_generation(self, generation_id: str, generation_data: dict):
+            return await self._process_with_generation_service(generation_id, generation_data, file_manager, enhanced=False, event_callback=event_callback)
+    
+    async def _process_with_generation_service(
+        self,
+        generation_id: str,
+        generation_data: dict,
+        file_manager: Any = None,
+        enhanced: bool = False,
+        event_callback: Any = None
+    ):
         """
-        Process a generation request end-to-end with progress tracking
+        Process generation using GenerationService for proper version tracking.
+        
+        This replaces the old _process_basic_generation and process_enhanced_generation
+        methods, integrating with GenerationService for better architecture.
+        
+        Args:
+            generation_id: Generation UUID
+            generation_data: Request data
+            file_manager: FileManager instance
+            enhanced: Whether to use enhanced prompt system
         """
         if not self.initialized:
             raise RuntimeError("AI models not initialized")
@@ -334,96 +309,261 @@ class AIOrchestrator:
         try:
             # Import here to avoid circular imports
             from app.core.database import get_db_session
-            from app.repositories.generation_repository import GenerationRepository
             
             db = await get_db_session()
             try:
-                generation_repo = GenerationRepository(db)
+                # Initialize GenerationService with current DB session
+                generation_service = GenerationService(db, file_manager)
+                
+                # Get the generation (it should already exist, created by the router)
+                generation = await db.get(Generation, generation_id)
+                
+                # If generation doesn't exist yet, we can't proceed (should be created by router first)
+                if not generation:
+                    raise ValueError(f"Generation {generation_id} not found. It should be created before processing.")
                 
                 # Update status to processing
-                await generation_repo.update_status(generation_id, "processing")
+                await generation_service.update_generation_status(generation_id, "processing")
                 
-                # Stage 1: Schema extraction
+                # Emit initial processing event
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "initialization",
+                        "message": "Starting code generation pipeline...",
+                        "progress": 2,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
+                # Stage 1: Context Analysis (if enhanced)
+                context_analysis = None
+                enhanced_prompts = None
+                recommendations = None
+                context_time = 0
+                
+                if enhanced and self.enhanced_prompt_system:
+                    if event_callback:
+                        await event_callback(generation_id, {
+                            "status": "processing",
+                            "stage": "context_analysis",
+                            "message": "Analyzing project context and requirements...",
+                            "progress": 5,
+                            "generation_mode": "enhanced"
+                        })
+                    
+                    context_start = time.time()
+                    context_analysis = await self.enhanced_prompt_system.analyze_context(generation_data)
+                    enhanced_prompts = await self.enhanced_prompt_system.generate_enhanced_prompts(
+                        generation_data, context_analysis
+                    )
+                    recommendations = await self.enhanced_prompt_system.get_recommendations(
+                        generation_data, context_analysis
+                    )
+                    context_time = time.time() - context_start
+                
+                # Stage 2: Schema extraction
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "schema_extraction",
+                        "message": "Extracting project schema and entities...",
+                        "progress": 10,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
                 schema_start = time.time()
-                await generation_repo.update_progress(
-                    generation_id, 
-                    stage_times={},  # Will update with actual times
-                )
                 
-                schema = await self._extract_schema(generation_data)
+                # ✅ FIX 6: Handle iteration - load parent files for schema extraction
+                parent_files = None
+                if generation_data.get("is_iteration"):
+                    parent_generation_id = generation_data.get("parent_generation_id") or generation.parent_generation_id
+                    if parent_generation_id:
+                        try:
+                            parent_gen = await db.get(Generation, parent_generation_id)
+                            if parent_gen:
+                                parent_files = parent_gen.output_files or {}
+                                logger.info(f"Loaded {len(parent_files)} parent files for iteration from DB")
+                        except Exception as parent_load_err:
+                            logger.warning(f"Could not load parent files from DB: {parent_load_err}")
+                    
+                    # If not in DB context, try from context
+                    if not parent_files:
+                        parent_files = generation_data.get("context", {}).get("parent_files")
+                
+                # Extract schema - use parent files if iteration, otherwise normal extraction
+                if parent_files and generation_data.get("is_iteration"):
+                    schema = self._extract_schema_from_files(parent_files)
+                    logger.info(f"Using parent file schema for iteration with {len(parent_files)} files")
+                else:
+                    schema = await self._extract_schema(generation_data, enhanced_prompts if enhanced else None)
+                
                 schema_time = time.time() - schema_start
                 
-                # Stage 2: Code generation
+                # Stage 3: Code generation (with incremental file saving)
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "code_generation_start",
+                        "message": "Starting code generation...",
+                        "progress": 15,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
+                # Note: Additional generation progress events are emitted by the provider/generator
                 code_start = time.time()
-                files = await self._generate_code(generation_data, schema)
+                files = await self._generate_code(generation_data, schema, file_manager, generation_id, enhanced_prompts if enhanced else None, event_callback)
                 code_time = time.time() - code_start
                 
-                # Stage 3: Code review
+                # Emit completion event for code generation stage
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "code_generation_complete",
+                        "message": f"Generated {len(files)} files successfully",
+                        "progress": 85,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
+                # Stage 4: Code review
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "code_review",
+                        "message": "Reviewing generated code for quality...",
+                        "progress": 92,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
                 review_start = time.time()
-                review_feedback = await self._review_code(files)
+                review_feedback = await self._review_code(files, context_analysis if enhanced else None)
                 review_time = time.time() - review_start
                 
-                # Stage 4: Documentation generation
+                # Stage 5: Documentation generation
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "documentation",
+                        "message": "Generating project documentation...",
+                        "progress": 95,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
                 docs_start = time.time()
-                documentation = await self._generate_documentation(files, schema)
+                if enhanced:
+                    documentation = await self._generate_enhanced_documentation(files, schema, context_analysis)
+                else:
+                    documentation = await self._generate_documentation(files, schema)
                 docs_time = time.time() - docs_start
                 
                 # Calculate quality score
-                quality_score = self._calculate_quality_score(files, schema, review_feedback)
+                if enhanced:
+                    quality_score = self._calculate_enhanced_quality_score(files, schema, review_feedback, context_analysis)
+                else:
+                    quality_score = self._calculate_quality_score(files, schema, review_feedback)
                 
-                # Update final progress
+                # Emit final save event
+                if event_callback:
+                    await event_callback(generation_id, {
+                        "status": "processing",
+                        "stage": "saving",
+                        "message": "Saving generation to database...",
+                        "progress": 98,
+                        "generation_mode": "enhanced" if enhanced else "classic"
+                    })
+                
+                # Save generation output using GenerationService
+                # This handles: hierarchical storage, version tracking, diff creation, auto-activation
                 total_time = time.time() - start_time
-                await generation_repo.update_progress(
-                    generation_id,
-                    stage_times={
-                        "schema_extraction": schema_time,
-                        "code_generation": code_time,
-                        "review": review_time,
-                        "docs_generation": docs_time,
-                        "total": total_time
-                    },
-                    output_files=files,
+                
+                generation = await generation_service.save_generation_output(
+                    generation_id=generation_id,
+                    files=files,
                     extracted_schema=schema,
-                    review_feedback=review_feedback,
-                    documentation=documentation
+                    documentation=documentation,
+                    auto_activate=True  # Set as active generation
                 )
                 
-                # Update status to completed
-                await generation_repo.update_status(
-                    generation_id, 
-                    "completed", 
-                    quality_score=quality_score
+                # Update additional metadata (timing, review, context analysis)
+                generation.review_feedback = review_feedback
+                generation.quality_score = quality_score
+                generation.schema_extraction_time = schema_time
+                generation.code_generation_time = code_time
+                generation.review_time = review_time
+                generation.docs_generation_time = docs_time
+                generation.total_time = total_time
+                
+                # Store enhanced prompt data if available
+                if enhanced and context_analysis:
+                    # Store context analysis as part of generation context
+                    if not generation.context:
+                        generation.context = {}
+                    generation.context.update({
+                        "context_analysis": context_analysis,
+                        "enhanced_prompts": enhanced_prompts,
+                        "recommendations": recommendations,
+                        "context_analysis_time": context_time
+                    })
+                
+                await db.commit()
+                await db.refresh(generation)
+                
+                logger.info(
+                    f"✅ Completed generation v{generation.version} for project {generation.project_id} "
+                    f"({generation.file_count} files, {total_time:.2f}s)"
                 )
+                
+                # ✅ CRITICAL FIX: Return generation result instead of None
+                return {
+                    "generation_id": generation_id,
+                    "status": "completed",
+                    "version": generation.version,
+                    "files": files,
+                    "file_count": len(files),
+                    "schema": schema,
+                    "review_feedback": review_feedback,
+                    "documentation": documentation,
+                    "quality_score": quality_score,
+                    "total_time": total_time,
+                    "project_id": generation.project_id
+                }
+                
             finally:
                 await db.close()
                 
         except Exception as e:
-            # Import here to avoid circular imports
+            logger.error(f"❌ Error processing generation {generation_id}: {e}")
+            # Update status to failed
             from app.core.database import get_db_session
-            from app.repositories.generation_repository import GenerationRepository
-            
             db_error = await get_db_session()
             try:
-                generation_repo = GenerationRepository(db_error)
-                await generation_repo.update_status(
-                    generation_id, 
-                    "failed", 
+                generation_service = GenerationService(db_error)
+                await generation_service.update_generation_status(
+                    generation_id,
+                    "failed",
                     error_message=str(e)
                 )
             finally:
                 await db_error.close()
             raise
 
-    async def _extract_schema(self, generation_data: dict) -> Dict[str, Any]:
-        """Extract schema from requirements using Llama model"""
+    async def _extract_schema(self, generation_data: dict, enhanced_prompts: Optional[Dict] = None) -> Dict[str, Any]:
+        """Extract schema from requirements using provider abstraction with optional enhanced prompts"""
         try:
-            llama_parser = await model_loader.get_model(ModelType.LLAMA_PARSER)
+            # Get schema extraction provider
+            provider = await self.provider_factory.get_provider(LLMTask.SCHEMA_EXTRACTION)
             
-            prompt = generation_data.get("prompt", "")
-            domain = generation_data.get("domain", "general")
-            tech_stack = generation_data.get("tech_stack", "fastapi_postgres")
+            # Use enhanced prompt if available
+            if enhanced_prompts and "schema_extraction" in enhanced_prompts:
+                prompt = enhanced_prompts["schema_extraction"]
+            else:
+                prompt = generation_data.get("prompt", "")
             
-            schema = await llama_parser.extract_schema(prompt, domain, tech_stack)
+            context = {
+                "domain": generation_data.get("domain", "general"),
+                "tech_stack": generation_data.get("tech_stack", "fastapi_postgres")
+            }
+            
+            schema = await provider.extract_schema(prompt, context)
             return schema
             
         except Exception as e:
@@ -451,10 +591,27 @@ class AIOrchestrator:
                 "constraints": ["Email must be unique", "Name is required"]
             }
 
-    async def _generate_code(self, generation_data: dict, schema: Dict[str, Any]) -> Dict[str, str]:
-        """Generate code files using Qwen model"""
+    async def _generate_code(
+        self,
+        generation_data: dict,
+        schema: Dict[str, Any],
+        file_manager: Any = None,
+        generation_id: str = None,
+        enhanced_prompts: Optional[Dict] = None,
+        event_callback: Any = None
+    ) -> Dict[str, str]:
+        """Generate code files using provider abstraction with optional incremental file saving"""
         try:
-            qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
+            print(f"\n{'='*80}")
+            print(f"🎯 AI ORCHESTRATOR: Starting code generation")
+            print(f"{'='*80}\n")
+            
+            # Get code generation provider
+            provider = await self.provider_factory.get_provider(LLMTask.CODE_GENERATION)
+            provider_info = await provider.get_provider_info()
+            
+            print(f"🤖 Using provider: {provider_info.get('name', 'Unknown')}")
+            logger.info(f"Using provider: {provider_info.get('name', 'Unknown')}")
             
             prompt = generation_data.get("prompt", "")
             context = {
@@ -463,11 +620,20 @@ class AIOrchestrator:
                 "constraints": generation_data.get("constraints", [])
             }
             
-            files = await qwen_generator.generate_project(prompt, schema, context)
+            # Call with file_manager and generation_id for incremental saving
+            files = await provider.generate_code(prompt, schema, context, file_manager, generation_id, event_callback)
+            
+            print(f"\n{'='*80}")
+            print(f"✅ AI ORCHESTRATOR: Code generation completed")
+            print(f"{'='*80}\n")
+            
             return files
             
         except Exception as e:
-            print(f"Error in code generation: {e}")
+            print(f"\n{'='*80}")
+            print(f"❌ AI ORCHESTRATOR ERROR in code generation: {e}")
+            print(f"{'='*80}\n")
+            logger.error(f"Error in code generation: {e}")
             # Fallback code generation
             template = generation_data.get("tech_stack", "fastapi_basic")
             
@@ -527,11 +693,14 @@ uvicorn app.main:app --reload
 """
             }
 
-    async def _review_code(self, files: Dict[str, str]) -> Dict[str, Any]:
-        """Review generated code using Starcoder model"""
+    async def _review_code(self, files: Dict[str, str], context_analysis: Optional[Dict] = None) -> Dict[str, Any]:
+        """Review generated code using provider abstraction"""
         try:
-            starcoder_reviewer = await model_loader.get_model(ModelType.STARCODER_REVIEWER)
-            review_result = await starcoder_reviewer.review_code(files)
+            # Get code review provider
+            provider = await self.provider_factory.get_provider(LLMTask.CODE_REVIEW)
+            
+            # Call with correct signature: (files)
+            review_result = await provider.review_code(files)
             return review_result
             
         except Exception as e:
@@ -572,17 +741,20 @@ uvicorn app.main:app --reload
             }
 
     async def _generate_documentation(self, files: Dict[str, str], schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate documentation using Mistral model"""
+        """Generate documentation using provider abstraction"""
         try:
-            mistral_docs = await model_loader.get_model(ModelType.MISTRAL_DOCS)
+            # Get documentation provider
+            provider = await self.provider_factory.get_provider(LLMTask.DOCUMENTATION)
             
-            project_context = {
+            # Prepare context
+            context = {
                 "project_name": "Generated FastAPI Project",
                 "domain": "general",
                 "tech_stack": "fastapi_postgres"
             }
             
-            documentation = await mistral_docs.generate_documentation(files, schema, project_context)
+            # Call with correct signature: (files, schema, context)
+            documentation = await provider.generate_documentation(files, schema, context)
             return documentation
             
         except Exception as e:
@@ -646,14 +818,15 @@ Returns a specific user
         memory_info = await self._check_memory_availability()
         
         try:
-            # Strategy 1: Try full AI pipeline if memory allows and models are loaded
-            if memory_info["can_use_full_ai"] and hasattr(model_loader, '_models') and model_loader._models:
-                print("🚀 Using full AI model pipeline")
-                return await self.generate_project(request)
+            # Strategy 1: Use provider-based AI generation (Gemini, etc.)
+            # Legacy model_loader check removed - using provider abstraction now
+            print("🚀 Using LLM provider pipeline")
+            return await self.generate_project(request)
                 
-            # Strategy 2: Use memory-efficient template-based generation
-            elif self.memory_efficient_service:
-                print("📝 Using memory-efficient template generation")
+        except Exception as ai_error:
+            # Strategy 2: Fallback to memory-efficient template-based generation
+            if self.memory_efficient_service:
+                print(f"⚠️ AI generation failed ({ai_error}), falling back to template generation")
                 
                 # Extract relevant parameters from request
                 tech_stack = request.context.get("tech_stack", "fastapi")
@@ -723,68 +896,68 @@ Returns a specific user
 
     async def generate_project(self, request: GenerationRequest) -> GenerationResult:
         """
-        Main pipeline: Default to Qwen Inference for memory efficiency
+        Main pipeline: Uses LLM providers for generation
         """
         if not self.initialized:
-            raise RuntimeError("AI models not initialized")
+            raise RuntimeError("AI Orchestrator not initialized")
 
-        # Check if we should use Qwen Inference mode
-        if settings.FORCE_INFERENCE_MODE or self.qwen_generator:
-            return await self._generate_project_with_qwen_inference(request)
-        
-        # Fallback to full pipeline if available
-        return await self._generate_project_full_pipeline(request)
-
-    async def _generate_project_with_qwen_inference(self, request: GenerationRequest) -> GenerationResult:
-        """Generate project using Qwen Inference API directly"""
-        print("🚀 Using Qwen Inference API for generation")
+        print(f"🚀 Generating project using {settings.LLM_PROVIDER} provider")
         
         try:
-            # Prepare comprehensive prompt for Qwen
-            schema_data = {
-                "domain": request.context.get("domain", "general"),
-                "tech_stack": request.context.get("tech_stack", "fastapi_postgres"),
-                "features": request.context.get("features", []),
-                "constraints": request.context.get("constraints", [])
-            }
+            # Get providers for each task
+            schema_provider = await self.provider_factory.get_provider(LLMTask.SCHEMA_EXTRACTION)
+            code_provider = await self.provider_factory.get_provider(LLMTask.CODE_GENERATION)
+            review_provider = await self.provider_factory.get_provider(LLMTask.CODE_REVIEW)
+            docs_provider = await self.provider_factory.get_provider(LLMTask.DOCUMENTATION)
             
-            # Use Qwen generator directly
-            if self.qwen_generator:
-                files = await self.qwen_generator.generate_project(
-                    prompt=request.prompt,
-                    schema=schema_data,
-                    context=request.context
-                )
-            else:
-                # Fallback to memory efficient service
-                files = await self.memory_efficient_service.generate_project(
-                    request.prompt, schema_data, request.context
-                )
+            # Step 1: Extract schema
+            print("📋 Extracting schema...")
+            schema = await schema_provider.extract_schema(
+                prompt=request.prompt,
+                context=request.context
+            )
             
-            # Create basic schema from generated files
-            schema = self._extract_schema_from_files(files)
+            # Step 2: Generate code
+            print("💻 Generating code...")
+            files = await code_provider.generate_code(
+                prompt=request.prompt,
+                schema=schema,
+                context=request.context
+            )
             
-            # Basic quality assessment
-            quality_score = self._calculate_basic_quality_score(files)
+            # Step 3: Review code
+            print("🔍 Reviewing code...")
+            review_feedback = await review_provider.review_code(files=files)
+            
+            # Step 4: Generate documentation
+            print("📚 Generating documentation...")
+            documentation = await docs_provider.generate_documentation(
+                files=files,
+                schema=schema,
+                context=request.context
+            )
+            
+            # Merge documentation into files
+            files.update(documentation)
+            
+            # Calculate quality score
+            quality_score = review_feedback.get("scores", {}).get("overall", 0.8)
             
             return GenerationResult(
                 files=files,
                 schema=schema,
-                review_feedback={
-                    "issues": [],
-                    "suggestions": ["Generated using Qwen Inference API"],
-                    "security_score": 0.8,
-                    "maintainability_score": 0.8,
-                    "performance_score": 0.8,
-                    "overall_score": quality_score
-                },
-                documentation={"README.md": files.get("README.md", "# Generated Project")},
+                review_feedback=review_feedback,
+                documentation=documentation,
                 quality_score=quality_score
             )
             
         except Exception as e:
-            print(f"Qwen Inference generation failed: {e}")
-            return await self._generate_fallback_project(request)
+            print(f"❌ Generation failed: {e}")
+            raise
+
+    async def _generate_project_with_qwen_inference(self, request: GenerationRequest) -> GenerationResult:
+        """Legacy method - redirects to generate_project"""
+        return await self.generate_project(request)
 
     async def _generate_project_full_pipeline(self, request: GenerationRequest) -> GenerationResult:
         """Generate project using full AI pipeline (original method)"""
@@ -881,6 +1054,8 @@ Returns a specific user
 
     def _extract_schema_from_files(self, files: Dict[str, str]) -> Dict[str, Any]:
         """Extract basic schema information from generated files"""
+        import re
+        
         schema = {
             "entities": [],
             "endpoints": [],
@@ -891,7 +1066,6 @@ Returns a specific user
         for file_path, content in files.items():
             if "model" in file_path.lower():
                 # Extract class names as entities
-                import re
                 classes = re.findall(r'class (\w+)', content)
                 schema["entities"].extend(classes)
             
@@ -902,31 +1076,6 @@ Returns a specific user
                     schema["endpoints"].append(f"{method.upper()} {path}")
         
         return schema
-        
-        # Base score from review if available
-        if isinstance(review, dict) and "overall_score" in review:
-            base_score = review["overall_score"]
-        else:
-            base_score = 0.8
-        
-        # Bonus for comprehensive files
-        if len(files) >= 5:
-            base_score += 0.05
-        if len(files) >= 8:
-            base_score += 0.05
-            
-        # Bonus for complete schema
-        entities = schema.get("entities", [])
-        if len(entities) >= 2:
-            base_score += 0.05
-            
-        # Penalty for critical review issues
-        issues = review.get("issues", [])
-        high_severity_issues = len([i for i in issues if i.get("severity") == "high"])
-        if high_severity_issues > 0:
-            base_score -= min(0.2, high_severity_issues * 0.1)
-            
-        return max(0.0, min(1.0, base_score))
 
     # Enhanced processing methods for Phase 2: Prompt Engineering Enhancement
     
@@ -935,9 +1084,10 @@ Returns a specific user
         generation_data: dict, 
         enhanced_prompts: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
-        """Extract schema using enhanced prompts and context"""
+        """Extract schema using enhanced prompts and provider abstraction"""
         try:
-            llama_parser = await model_loader.get_model(ModelType.LLAMA_PARSER)
+            # Get schema extraction provider
+            provider = await self.provider_factory.get_provider(LLMTask.SCHEMA_EXTRACTION)
             
             # Use enhanced intent clarification prompt if available
             if enhanced_prompts and "intent_clarification" in enhanced_prompts:
@@ -947,10 +1097,14 @@ Returns a specific user
                 # Fallback to original prompt
                 schema_prompt = generation_data.get("prompt", "")
             
-            domain = generation_data.get("domain", "general")
-            tech_stack = generation_data.get("tech_stack", "fastapi_postgres")
+            # Build context for the provider
+            context = {
+                "domain": generation_data.get("domain", "general"),
+                "tech_stack": generation_data.get("tech_stack", "fastapi_postgres")
+            }
             
-            schema = await llama_parser.extract_schema(schema_prompt, domain, tech_stack)
+            # Extract schema using provider
+            schema = await provider.extract_schema(schema_prompt, context)
             
             # Enhance schema with context if available
             if enhanced_prompts:
@@ -959,12 +1113,15 @@ Returns a specific user
                     "prompt_type": "intent_clarification"
                 }
             
+            # Add provider info
+            provider_info = await provider.get_provider_info()
+            schema["provider"] = provider_info["name"]
+            
             return schema
             
         except Exception as e:
             print(f"Error in enhanced schema extraction: {e}")
-            # Fallback to basic schema extraction
-            return await self._extract_schema(generation_data)
+            raise
 
     async def _generate_enhanced_code(
         self, 
@@ -972,40 +1129,43 @@ Returns a specific user
         schema: Dict[str, Any],
         enhanced_prompts: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
-        """Generate code using enhanced prompts and architecture planning"""
+        """Generate code using enhanced prompts and provider abstraction"""
         try:
-            qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
+            # Get code generation provider
+            provider = await self.provider_factory.get_provider(LLMTask.CODE_GENERATION)
+            provider_info = await provider.get_provider_info()
             
-            # Use enhanced architecture and implementation prompts if available
+            print(f"🔧 Using {provider_info['name']} for code generation")
+            
+            # Prepare prompt
             if enhanced_prompts:
+                # Combine architecture and implementation prompts
+                prompt_parts = []
+                
                 if "architecture_planning" in enhanced_prompts:
-                    architecture_prompt = enhanced_prompts["architecture_planning"]
+                    prompt_parts.append(f"Architecture:\n{enhanced_prompts['architecture_planning']}")
                     print("Using enhanced architecture planning prompt")
-                else:
-                    architecture_prompt = generation_data.get("prompt", "")
-                
+                    
                 if "implementation_generation" in enhanced_prompts:
-                    implementation_prompt = enhanced_prompts["implementation_generation"]
+                    prompt_parts.append(f"Implementation:\n{enhanced_prompts['implementation_generation']}")
                     print("Using enhanced implementation generation prompt")
+                    
+                if prompt_parts:
+                    generation_prompt = "\n\n".join(prompt_parts)
                 else:
-                    implementation_prompt = generation_data.get("prompt", "")
-                
-                # Generate with enhanced context
-                files = await qwen_generator.generate_project_enhanced(
-                    architecture_prompt=architecture_prompt,
-                    implementation_prompt=implementation_prompt,
-                    schema=schema,
-                    domain=generation_data.get("domain", "general"),
-                    tech_stack=generation_data.get("tech_stack", "fastapi_postgres")
-                )
+                    generation_prompt = generation_data.get("prompt", "")
             else:
-                # Fallback to basic generation
-                files = await qwen_generator.generate_project(
-                    generation_data.get("prompt", ""),
-                    schema,
-                    generation_data.get("domain", "general"),
-                    generation_data.get("tech_stack", "fastapi_postgres")
-                )
+                generation_prompt = generation_data.get("prompt", "")
+            
+            # Build context for the provider
+            context = {
+                "domain": generation_data.get("domain", "general"),
+                "tech_stack": generation_data.get("tech_stack", "fastapi_postgres"),
+                "prompt": generation_prompt
+            }
+            
+            # Generate code using provider with correct signature: (prompt, schema, context)
+            files = await provider.generate_code(generation_prompt, schema, context)
             
             # Add enhancement metadata
             if enhanced_prompts:
@@ -1013,15 +1173,15 @@ Returns a specific user
                     "enhanced_generation": True,
                     "prompts_used": list(enhanced_prompts.keys()),
                     "generation_timestamp": time.time(),
-                    "enhancement_version": "2.0"
+                    "enhancement_version": "2.0",
+                    "provider": provider_info["name"]
                 }, indent=2)
             
             return files
             
         except Exception as e:
             print(f"Error in enhanced code generation: {e}")
-            # Fallback to basic code generation
-            return await self._generate_code(generation_data, schema)
+            raise
 
     async def _review_code_with_context(
         self, 
@@ -1029,26 +1189,33 @@ Returns a specific user
         context_analysis: Optional[Dict[str, Any]] = None,
         recommendations: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Review code with additional context and recommendations"""
+        """Review code with additional context and provider abstraction"""
         try:
-            starcoder_reviewer = await model_loader.get_model(ModelType.STARCODER_REVIEWER)
+            # Get code review provider
+            provider = await self.provider_factory.get_provider(LLMTask.CODE_REVIEW)
+            provider_info = await provider.get_provider_info()
             
-            # Basic code review
-            review_feedback = await starcoder_reviewer.review_code(files)
+            print(f"🔍 Using {provider_info['name']} for code review")
             
-            # Enhance review with context
+            # Review code using provider with correct signature: (files)
+            review_feedback = await provider.review_code(files)
+            
+            # Enhance review with context if available
             if context_analysis and recommendations:
                 enhanced_review = await self._enhance_review_with_context(
                     review_feedback, context_analysis, recommendations
                 )
+                # Add provider info
+                enhanced_review["provider"] = provider_info["name"]
                 return enhanced_review
             
+            # Add provider info
+            review_feedback["provider"] = provider_info["name"]
             return review_feedback
             
         except Exception as e:
             print(f"Error in enhanced code review: {e}")
-            # Fallback to basic review
-            return await self._review_code(files)
+            raise
 
     async def _enhance_review_with_context(
         self,
@@ -1131,26 +1298,38 @@ Returns a specific user
         schema: Dict[str, Any],
         context_analysis: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Generate documentation with enhanced context awareness"""
+        """Generate documentation using enhanced context and provider abstraction"""
         try:
-            mistral_docs = await model_loader.get_model(ModelType.MISTRAL_DOCS)
+            # Get documentation provider
+            provider = await self.provider_factory.get_provider(LLMTask.DOCUMENTATION)
+            provider_info = await provider.get_provider_info()
             
-            # Basic documentation generation
-            basic_docs = await mistral_docs.generate_documentation(files, schema)
+            print(f"📝 Using {provider_info['name']} for documentation generation")
+            
+            # Build context for the provider
+            context = {
+                "context_analysis": context_analysis
+            }
+            
+            # Generate documentation using provider with correct signature: (files, schema, context)
+            basic_docs = await provider.generate_documentation(files, schema, context)
             
             # Enhance with context if available
             if context_analysis:
                 enhanced_docs = await self._enhance_documentation_with_context(
                     basic_docs, context_analysis
                 )
+                # Add provider info
+                enhanced_docs["provider"] = provider_info["name"]
                 return enhanced_docs
             
+            # Add provider info
+            basic_docs["provider"] = provider_info["name"]
             return basic_docs
             
         except Exception as e:
             print(f"Error in enhanced documentation generation: {e}")
-            # Fallback to basic documentation
-            return await self._generate_documentation(files, schema)
+            raise
 
     async def _enhance_documentation_with_context(
         self,
@@ -1289,23 +1468,257 @@ Complexity level: **{user_context.get('complexity_preference', 'moderate')}**
         
         return features
 
+    def _detect_iteration_intent(self, prompt: str, existing_files: Dict[str, str]) -> str:
+        """Detect the intent of an iteration: add, modify, or remove"""
+        prompt_lower = prompt.lower()
+        
+        # Check for add intent
+        add_keywords = ['add', 'create', 'new', 'missing', 'include', 'implement']
+        if any(keyword in prompt_lower for keyword in add_keywords):
+            return 'add'
+        
+        # Check for modify intent
+        modify_keywords = ['fix', 'update', 'change', 'modify', 'improve', 'refactor', 'enhance']
+        if any(keyword in prompt_lower for keyword in modify_keywords):
+            return 'modify'
+        
+        # Check for remove intent
+        remove_keywords = ['remove', 'delete', 'drop', 'eliminate']
+        if any(keyword in prompt_lower for keyword in remove_keywords):
+            return 'remove'
+        
+        return 'unknown'
+
+    def _format_file_tree(self, files: Dict[str, str]) -> str:
+        """Format files as a visual tree structure"""
+        from collections import defaultdict
+        
+        # Build directory tree
+        tree = defaultdict(list)
+        for filepath in sorted(files.keys()):
+            parts = filepath.split('/')
+            if len(parts) > 1:
+                dir_path = '/'.join(parts[:-1])
+                filename = parts[-1]
+                tree[dir_path].append(filename)
+            else:
+                tree[''].append(filepath)
+        
+        # Format as tree
+        result = []
+        for dir_path in sorted(tree.keys()):
+            if dir_path:
+                result.append(f"{dir_path}/")
+            for filename in sorted(tree[dir_path]):
+                prefix = "  " if dir_path else ""
+                result.append(f"{prefix}├── {filename}")
+        
+        return "\n".join(result[:50])  # Limit to 50 lines
+
+    def _show_key_files(self, files: Dict[str, str], max_files: int = 5) -> str:
+        """Show content of most relevant files to LLM"""
+        # Priority order for key files
+        priority_patterns = [
+            'main.py', 'app.py', '__init__.py',
+            'config', 'settings',
+            'models/', 'schemas/',
+            'routers/', 'api/',
+            'database', 'db.py'
+        ]
+        
+        key_files = []
+        for pattern in priority_patterns:
+            for filepath, content in files.items():
+                if pattern in filepath.lower() and filepath not in key_files:
+                    key_files.append(filepath)
+                    if len(key_files) >= max_files:
+                        break
+            if len(key_files) >= max_files:
+                break
+        
+        # Format as code blocks
+        result = []
+        for filepath in key_files[:max_files]:
+            content = files[filepath]
+            # Truncate long files
+            if len(content) > 500:
+                content = content[:500] + "\n... (truncated)"
+            result.append(f"=== {filepath} ===\n{content}\n")
+        
+        return "\n".join(result)
+
     async def iterate_project(
-        self, existing_files: Dict[str, str], modification_prompt: str
+        self, existing_files: Dict[str, str], modification_prompt: str, context: Dict = None, event_callback: Any = None
     ) -> Dict[str, str]:
-        """Handle iterative modifications to existing projects"""
+        """Handle iterative modifications to existing projects with context awareness"""
         try:
-            qwen_generator = await model_loader.get_model(ModelType.QWEN_GENERATOR)
-            modified_files = await qwen_generator.modify_project(existing_files, modification_prompt)
-            return modified_files
+            if context is None:
+                context = {}
+            
+            # Emit start event
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "processing",
+                    "stage": "iteration_start",
+                    "message": "Starting iteration analysis...",
+                    "progress": 5
+                })
+            
+            # Detect iteration intent
+            intent = self._detect_iteration_intent(modification_prompt, existing_files)
+            logger.info(f"[Iteration] Detected intent: {intent}")
+            
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "processing",
+                    "stage": "intent_detection",
+                    "message": f"Detected intent: {intent}",
+                    "progress": 10
+                })
+            
+            # Build context-rich prompt for LLM
+            file_tree = self._format_file_tree(existing_files)
+            key_files_content = self._show_key_files(existing_files, max_files=5)
+            
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "processing",
+                    "stage": "context_building",
+                    "message": "Building context from existing files...",
+                    "progress": 20
+                })
+            
+            context_aware_prompt = f"""
+ITERATION REQUEST: Modify an existing project
+
+EXISTING PROJECT STRUCTURE:
+Total Files: {len(existing_files)}
+{file_tree}
+
+KEY FILES CONTENT:
+{key_files_content}
+
+USER MODIFICATION REQUEST: {modification_prompt}
+DETECTED INTENT: {intent}
+
+CRITICAL INSTRUCTIONS:
+1. This is an ITERATION, not a new project generation
+2. The project already has {len(existing_files)} files
+3. Generate ONLY files that need to be:
+   - ADDED (if intent is 'add')
+   - MODIFIED (if intent is 'modify')
+   - REMOVED (return empty content if intent is 'remove')
+4. DO NOT regenerate all existing files
+5. Preserve the existing project structure and patterns
+6. Ensure new/modified files integrate seamlessly with existing code
+
+Expected behavior:
+- Intent 'add': Return new files to be added to existing {len(existing_files)} files
+- Intent 'modify': Return only modified files, preserve others
+- Intent 'remove': Return files to remove (with empty content or exclusion flag)
+"""
+            
+            # Get code generation provider
+            code_provider = await self.provider_factory.get_provider(LLMTask.CODE_GENERATION)
+            
+            # Update context with iteration metadata
+            iteration_context = {
+                **context,
+                "existing_files": list(existing_files.keys()),
+                "existing_file_count": len(existing_files),
+                "is_iteration": True,
+                "iteration_intent": intent,
+                "tech_stack": context.get("tech_stack", "fastapi_postgres")
+            }
+            
+            # Create a schema from existing files for context
+            schema = self._extract_schema_from_files(existing_files)
+            
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "processing",
+                    "stage": "code_generation",
+                    "message": f"Generating {intent} modifications...",
+                    "progress": 40
+                })
+            
+            logger.info(f"[Iteration] Generating modifications with context: {len(existing_files)} existing files")
+            
+            # Generate modified/new files with context-aware prompt
+            modified_files = await code_provider.generate_code(
+                prompt=context_aware_prompt,
+                schema=schema,
+                context=iteration_context,
+                event_callback=event_callback  # ✅ Pass callback to provider
+            )
+            
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "processing",
+                    "stage": "merging_files",
+                    "message": "Merging changes with existing files...",
+                    "progress": 80
+                })
+            
+            # ✅ CRITICAL FIX: Merge existing files with modified files
+            if modified_files:
+                # Start with existing files (preserve everything)
+                merged = existing_files.copy()
+                
+                # Handle different intents
+                if intent == 'remove':
+                    # Remove files that were marked for deletion
+                    for filepath in modified_files.keys():
+                        if filepath in merged:
+                            del merged[filepath]
+                            logger.info(f"[Iteration] Removed file: {filepath}")
+                else:
+                    # Add or modify files
+                    merged.update(modified_files)
+                
+                logger.info(f"[Iteration] Merge complete: {len(existing_files)} existing + {len(modified_files)} changes = {len(merged)} total files")
+                logger.info(f"[Iteration] Intent '{intent}' resulted in: Added/Modified={len(set(modified_files.keys()) - set(existing_files.keys()))}, Updated={len(set(modified_files.keys()) & set(existing_files.keys()))}")
+                
+                if event_callback:
+                    await event_callback(context.get("generation_id"), {
+                        "status": "completed",
+                        "stage": "iteration_complete",
+                        "message": f"Iteration complete: {len(merged)} total files",
+                        "progress": 100
+                    })
+                
+                return merged
+            else:
+                # If generation fails, return existing files unchanged
+                logger.warning("[Iteration] Generated no files, returning existing files unchanged")
+                
+                if event_callback:
+                    await event_callback(context.get("generation_id"), {
+                        "status": "completed",
+                        "stage": "iteration_no_changes",
+                        "message": "No changes generated, existing files preserved",
+                        "progress": 100
+                    })
+                
+                return existing_files
             
         except Exception as e:
-            print(f"Error in project iteration: {e}")
+            logger.error(f"[Iteration] Failed: {e}", exc_info=True)
+            
+            if event_callback:
+                await event_callback(context.get("generation_id"), {
+                    "status": "failed",
+                    "stage": "iteration_error",
+                    "message": f"Iteration failed: {str(e)}",
+                    "progress": 0
+                })
+            
             # Return original files if iteration fails
             return existing_files
 
     async def cleanup(self):
         """Cleanup model resources"""
-        await model_loader.cleanup()
+        # Legacy model_loader cleanup removed - using provider abstraction now
         print("AI Orchestrator cleanup completed")
 
 # Provide a module-level orchestrator instance for easy imports

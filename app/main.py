@@ -48,7 +48,7 @@ app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"]
 app.include_router(templates.router, prefix="/templates", tags=["Templates"])
 
 # Unified Generation Router (Recommended)
-app.include_router(unified_generation.router, prefix="/api/v2/generation", tags=["Generation (Unified)"])
+app.include_router(unified_generation.router, prefix="/api/v2/generation", tags=["Generation (Unified)"], deprecated=True)
 
 app.include_router(generations.router, prefix="/generations", tags=["Generations"])
 # app.include_router(ai.router, prefix="/ai", tags=["AI Services (Legacy)"], deprecated=True)

@@ -69,12 +69,23 @@ try:
         
         print('\n6. Testing Code Generation...')
         generation_request = {
-            'prompt': 'Create a simple FastAPI endpoint for user management with CRUD operations',
+            'prompt': 'Create a task management API with user authentication, task CRUD operations, priority levels, and due dates',
+            'project_id': None,  # Will be created automatically
             'context': {
-                'domain': 'web_api',
-                'complexity': 'medium'
+                'features': ['authentication', 'task_crud', 'priority_system', 'deadlines'],
+                'complexity': 'medium',
+                'use_case': 'productivity_app'
             },
-            'tech_stack': ['fastapi', 'sqlalchemy']
+            'tech_stack': 'fastapi_postgres',
+            'domain': 'productivity',
+            'constraints': [
+                'must_include_jwt_auth',
+                'postgresql_database_required',
+                'rest_api_design'
+            ],
+            'is_iteration': False,
+            'parent_generation_id': None,
+            'generation_mode': 'auto'
         }
         
         response = requests.post(f'{BASE_URL}/ai/generate', 
