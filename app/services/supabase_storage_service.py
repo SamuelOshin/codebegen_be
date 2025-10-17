@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timedelta
 from loguru import logger
-from supabase import create_client, Client
-from supabase.lib.storage_exception import StorageException
+from supabase import create_client, Client, StorageException
 
 from app.core.config import settings
 
