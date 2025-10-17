@@ -34,6 +34,7 @@ flake8==6.1.0
 fsspec==2025.7.0
 greenlet==3.2.4
 gunicorn==21.2.0
+google-generativeai==0.8.3
 h11==0.16.0
 hf-xet==1.1.7
 httpcore==1.0.9
