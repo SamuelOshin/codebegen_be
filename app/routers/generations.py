@@ -39,6 +39,7 @@ from app.services.generation_file_service import (
 from app.services.github_deployment_service import (
     github_deployment_service, generation_comparison_service
 )
+from app.services.storage_integration_helper import storage_helper
 from app.models.generation import Generation
 import time
 from typing import Dict, Any, Optional
@@ -826,11 +827,29 @@ async def _process_enhanced_generation(
             "generation_mode": generation_config.mode
         })
         
-        # Step 5: File Management and Storage
-        file_metadata = await file_manager.save_generation_files(
+        # Step 5: File Management and Storage (with cloud support)
+        # Get generation record to access project_id and version
+        generation_repo = GenerationRepository(db)
+        generation_record = await generation_repo.get_by_id(generation_id)
+        
+        # Save to local + cloud storage (if enabled)
+        storage_path, file_count, total_size = await storage_helper.save_generation_with_cloud(
+            project_id=generation_record.project_id,
             generation_id=generation_id,
-            files=generation_result.get("files", {})
+            version=generation_record.version,
+            files=generation_result.get("files", {}),
+            metadata={
+                "mode": generation_config.mode,
+                "quality_score": quality_metrics.overall_score if 'quality_metrics' in locals() else None,
+                "file_count": len(generation_result.get("files", {}))
+            }
         )
+        
+        file_metadata = {
+            "storage_path": str(storage_path),
+            "file_count": file_count,
+            "total_size": total_size
+        }
         
         # Create downloadable ZIP
         zip_path = await file_manager.create_zip_archive(generation_id)
@@ -872,15 +891,26 @@ async def _process_enhanced_generation(
         
         # Step 7: Update database with final result
         generation_repo = GenerationRepository(db)
+        
+        # Get cloud download URL if available
+        cloud_download_url = await storage_helper.get_download_url_for_generation(
+            project_id=generation_record.project_id,
+            generation_id=generation_id,
+            version=generation_record.version
+        )
+        
+        result_data = {
+            **generation_result,
+            "quality_metrics": quality_metrics.__dict__,
+            "file_metadata": file_metadata,
+            "download_url": cloud_download_url or f"/api/generations/{generation_id}/download",
+            "cloud_storage_enabled": storage_helper.cloud_enabled
+        }
+        
         await generation_repo.update(
             generation_id,
             status="completed",
-            result={
-                **generation_result,
-                "quality_metrics": quality_metrics.__dict__,
-                "file_metadata": file_metadata,
-                "download_url": f"/api/generations/{generation_id}/download"
-            },
+            result=result_data,
             completed_at=datetime.utcnow()
         )
         
@@ -1132,11 +1162,30 @@ async def _process_classic_generation(
             except Exception as validation_err:
                 logger.warning(f"[Validation] Could not validate iteration results: {validation_err}")
         
-        # Step 3: File Management and Storage
-        file_metadata = await file_manager.save_generation_files(
+        # Step 3: File Management and Storage (with cloud support)
+        # Get generation record to access project_id and version
+        generation_repo = GenerationRepository(db)
+        generation_record = await generation_repo.get_by_id(generation_id)
+        
+        # Save to local + cloud storage (if enabled)
+        storage_path, file_count, total_size = await storage_helper.save_generation_with_cloud(
+            project_id=generation_record.project_id,
             generation_id=generation_id,
-            files=files_to_save
+            version=generation_record.version,
+            files=files_to_save,
+            metadata={
+                "mode": generation_config.mode,
+                "quality_score": quality_metrics.overall_score if 'quality_metrics' in locals() else None,
+                "file_count": len(files_to_save),
+                "is_iteration": True
+            }
         )
+        
+        file_metadata = {
+            "storage_path": str(storage_path),
+            "file_count": file_count,
+            "total_size": total_size
+        }
         
         # Create downloadable ZIP
         zip_path = await file_manager.create_zip_archive(generation_id)
@@ -1178,6 +1227,14 @@ async def _process_classic_generation(
         # Step 5: Update database with final result
         generation_repo = GenerationRepository(db)
         
+        # Get cloud download URL if available
+        generation_record = await generation_repo.get_by_id(generation_id)
+        cloud_download_url = await storage_helper.get_download_url_for_generation(
+            project_id=generation_record.project_id,
+            generation_id=generation_id,
+            version=generation_record.version
+        )
+        
         # Update progress with output files and metadata
         await generation_repo.update_progress(
             generation_id=generation_id,
@@ -1187,7 +1244,8 @@ async def _process_classic_generation(
             output_files=result_dict.get("files", {}),
             extracted_schema=result_dict.get("schema", {}),
             review_feedback=result_dict.get("review_feedback", []),
-            documentation=result_dict.get("documentation", {})
+            documentation=result_dict.get("documentation", {}),
+            cloud_download_url=cloud_download_url
         )
         
         # Update status to completed with quality score
@@ -1405,7 +1463,17 @@ async def list_generations(
         filters=filters
     )
     
-    return [GenerationResponse.from_orm(gen) for gen in generations]
+    # Enrich responses with cloud storage info
+    enriched_responses = []
+    for gen in generations:
+        response_dict = GenerationResponse.from_orm(gen).dict()
+        enriched = await storage_helper.enrich_generation_response(
+            response_dict,
+            include_download_url=True
+        )
+        enriched_responses.append(GenerationResponse(**enriched))
+    
+    return enriched_responses
 
 
 @router.get(
@@ -1435,7 +1503,17 @@ async def get_generation(
             detail="You don't have permission to access this generation"
         )
     
-    return GenerationResponse.from_orm(generation)
+    # Convert to response and enrich with cloud storage info
+    response = GenerationResponse.from_orm(generation)
+    response_dict = response.dict()
+    
+    # Enrich response with download URL and cloud storage info
+    enriched_response = await storage_helper.enrich_generation_response(
+        response_dict,
+        include_download_url=True
+    )
+    
+    return GenerationResponse(**enriched_response)
 
 
 @router.patch(
@@ -1784,7 +1862,18 @@ async def get_generation_iterations(
         )
     
     iterations = await generation_repo.get_iterations(generation_id)
-    return [GenerationResponse.from_orm(iteration) for iteration in iterations]
+    
+    # Enrich responses with cloud storage info
+    enriched_responses = []
+    for iteration in iterations:
+        response_dict = GenerationResponse.from_orm(iteration).dict()
+        enriched = await storage_helper.enrich_generation_response(
+            response_dict,
+            include_download_url=True
+        )
+        enriched_responses.append(GenerationResponse(**enriched))
+    
+    return enriched_responses
 
 
 
@@ -1835,7 +1924,18 @@ async def get_project_generations(
         )
     
     generations = await generation_repo.get_by_project_id(project_id)
-    return [GenerationResponse.from_orm(gen) for gen in generations]
+    
+    # Enrich responses with cloud storage info
+    enriched_responses = []
+    for gen in generations:
+        response_dict = GenerationResponse.from_orm(gen).dict()
+        enriched = await storage_helper.enrich_generation_response(
+            response_dict,
+            include_download_url=True
+        )
+        enriched_responses.append(GenerationResponse(**enriched))
+    
+    return enriched_responses
 
 
 @router.get(
@@ -1852,7 +1952,18 @@ async def get_active_generations(
     generation_repo = GenerationRepository(db)
     
     active_generations = await generation_repo.get_active_generations(current_user.id)
-    return [GenerationResponse.from_orm(gen) for gen in active_generations]
+    
+    # Enrich responses with cloud storage info
+    enriched_responses = []
+    for gen in active_generations:
+        response_dict = GenerationResponse.from_orm(gen).dict()
+        enriched = await storage_helper.enrich_generation_response(
+            response_dict,
+            include_download_url=True
+        )
+        enriched_responses.append(GenerationResponse(**enriched))
+    
+    return enriched_responses
 
 
 # Background task for generation processing
