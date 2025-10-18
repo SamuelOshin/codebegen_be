@@ -19,7 +19,6 @@ click==8.2.1
 click-didyoumean==0.3.1
 click-plugins==1.1.1.2
 click-repl==0.3.0
--e git+https://github.com/SamuelOshin/codebegen_be.git@44c725081a12578461d586eb9373383fe303f65b#egg=codebegen_be
 colorama==0.4.6
 coverage==7.10.3
 cryptography==45.0.6
