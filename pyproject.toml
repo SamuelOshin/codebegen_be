@@ -24,7 +24,7 @@ python-jose = {extras = ["cryptography"], version = "^3.3"}
 passlib = {extras = ["bcrypt"], version = "^1.7"}
 python-multipart = "^0.0.6"
 # HTTP clients & testing
-httpx = "^0.25"
+httpx = "^0.26"
 requests = "^2.31"
 # Rate limiting & Middleware
 slowapi = "^0.1"
