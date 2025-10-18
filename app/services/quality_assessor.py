@@ -7,13 +7,13 @@ import ast
 import re
 import subprocess
 import tempfile
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class QualityLevel(str, Enum):

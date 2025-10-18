@@ -13,7 +13,7 @@ import shutil
 import zipfile
 import tempfile
 import asyncio
-import logging
+from loguru import logger
 import json
 import subprocess
 from pathlib import Path
@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from app.core.config import settings
 from app.schemas.generation import GenerationStatus
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class FileManager:

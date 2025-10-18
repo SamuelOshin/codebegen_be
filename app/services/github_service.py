@@ -5,7 +5,7 @@ Handles repository creation, file uploads, and PR management.
 
 import asyncio
 import base64
-import logging
+from loguru import logger
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.services.file_manager import file_manager
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class GitHubService:

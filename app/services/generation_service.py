@@ -11,7 +11,7 @@ Design Principles:
 - Transaction Safety: Proper commit/rollback handling
 """
 
-import logging
+from loguru import logger
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 from datetime import datetime
@@ -24,7 +24,7 @@ from app.models.generation import Generation
 from app.models.project import Project
 from app.services.file_manager import FileManager
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class GenerationServiceError(Exception):

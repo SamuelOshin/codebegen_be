@@ -24,12 +24,12 @@ Usage:
 
 import secrets
 import time
-import logging
+from loguru import logger
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 @dataclass

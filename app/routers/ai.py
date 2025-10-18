@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional
 import json
 import asyncio
-import logging
+from loguru import logger
 import time
 from datetime import datetime
 from uuid import uuid4
@@ -40,7 +40,7 @@ from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
 from app.models.generation import GenerationStatus
 
-logger = logging.getLogger(__name__)
+logger = logger
 router = APIRouter()
 
 # In-memory event store for streaming (in production, use Redis)

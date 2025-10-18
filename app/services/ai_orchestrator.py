@@ -15,7 +15,7 @@ import asyncio
 import json
 import time
 import psutil
-import logging
+from loguru import logger
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
@@ -29,7 +29,7 @@ from app.services.generation_service import GenerationService
 from app.models.generation import Generation
 
 # Configure logger
-logger = logging.getLogger(__name__)
+logger = logger
 
 @dataclass
 class EnhancedGenerationRequest:

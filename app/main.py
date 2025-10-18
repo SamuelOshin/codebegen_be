@@ -10,6 +10,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from loguru import logger
 
 from app.core.config import settings
 from app.core.exceptions import setup_exception_handlers
@@ -23,8 +24,12 @@ app = FastAPI(
     title="codebegen API",
     description="AI-Powered FastAPI Backend Generator",
     version="1.0.0",
-    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    docs_url="/api/docs" if settings.ENVIRONMENT != "production" else None,
 )
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to CodeBeGen. Visit /api/docs for api documentation."}
 
 # Middleware
 app.add_middleware(

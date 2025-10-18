@@ -7,7 +7,7 @@ for all AI tasks: schema extraction, code generation, code review, and documenta
 
 import json
 import re
-import logging
+from loguru import logger
 from typing import Dict, Any, Optional
 
 try:
@@ -16,13 +16,13 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
-    logging.warning("google-generativeai not available. Gemini provider will not work.")
+    logger.warning("google-generativeai not available. Gemini provider will not work.")
 
 from .base_provider import BaseLLMProvider, LLMTask
 from app.core.config import settings
 
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class GeminiProvider(BaseLLMProvider):

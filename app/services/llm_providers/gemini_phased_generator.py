@@ -8,7 +8,7 @@ This approach mirrors how production AI coding assistants (Cursor, v0.dev, Repli
 generate code - in focused phases rather than all at once.
 """
 
-import logging
+from loguru import logger
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from .base_provider import LLMTask
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class GeminiPhasedGenerator:

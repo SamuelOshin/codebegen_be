@@ -12,7 +12,7 @@ Features:
 - Metadata tracking for auto-created projects
 """
 
-import logging
+from loguru import logger
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.models.project import Project
 from app.services.prompt_analysis_service import prompt_analysis_service, PromptAnalysisResult
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class AutoProjectService:
