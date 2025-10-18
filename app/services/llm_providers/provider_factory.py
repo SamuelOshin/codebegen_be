@@ -5,13 +5,13 @@ Handles dynamic selection and instantiation of LLM providers based on
 configuration settings and task requirements.
 """
 
-import logging
+from loguru import logger
 from typing import Optional, Dict
 from .base_provider import BaseLLMProvider, LLMTask
 from app.core.config import settings
 
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class LLMProviderFactory:

@@ -5,14 +5,14 @@ Wraps existing HuggingFace model implementations (Llama, Qwen, Starcoder, Mistra
 to implement the BaseLLMProvider interface, enabling seamless provider switching.
 """
 
-import logging
+from loguru import logger
 from typing import Dict, Any, Optional
 
 from .base_provider import BaseLLMProvider, LLMTask
 from app.core.config import settings
 
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class HuggingFaceProvider(BaseLLMProvider):

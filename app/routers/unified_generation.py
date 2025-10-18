@@ -3,7 +3,7 @@ Unified generation router that consolidates both classic and enhanced generation
 Eliminates DRY violation by providing a single entry point with feature flag-based routing.
 """
 
-import logging
+from loguru import logger
 import time
 import asyncio
 from typing import Dict, Any, Optional
@@ -37,7 +37,7 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.generation import GenerationStatus
 
 
-logger = logging.getLogger(__name__)
+logger = logger
 router = APIRouter()
 
 # In-memory event store for streaming (in production, use Redis)

@@ -6,6 +6,8 @@ import logging
 import sys
 import io
 
+from app.main import app
+
 # Configure UTF-8 encoding for Windows console to support emojis
 if sys.platform == 'win32':
     # Wrap stdout with UTF-8 encoding
@@ -24,8 +26,6 @@ logging.basicConfig(
 # Set specific loggers to INFO level
 logging.getLogger('app.services.llm_providers.gemini_provider').setLevel(logging.INFO)
 logging.getLogger('app.services.ai_orchestrator').setLevel(logging.INFO)
-
-from app.main import app
 
 if __name__ == "__main__":
     import uvicorn

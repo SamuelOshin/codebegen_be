@@ -8,11 +8,11 @@ This service serves as a memory-aware fallback for the existing AIOrchestrator.
 import asyncio
 import psutil
 from typing import Dict, Any, Optional, List
-import logging
+from loguru import logger
 
 from app.services.advanced_template_system import AdvancedTemplateSystem, DomainType, FeatureModule, TemplateRequirements
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class MemoryEfficientGenerationService:

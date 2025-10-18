@@ -4,7 +4,7 @@ Generations router for AI-powered code generation endpoints.
 
 import asyncio
 import json
-import logging
+from loguru import logger
 import time
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
@@ -75,7 +75,7 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.generation import GenerationStatus
 
 
-logger = logging.getLogger(__name__)
+logger = logger
 router = APIRouter()
 
 # In-memory event store for streaming (in production, use Redis)

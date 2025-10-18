@@ -6,7 +6,7 @@ import difflib
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-import logging
+from loguru import logger
 
 from app.schemas.generation import (
     GitHubDeploymentRequest, GitHubDeploymentResponse,
@@ -16,7 +16,7 @@ from app.schemas.generation import (
 from app.services.file_manager import file_manager
 from app.services.github_service import github_service
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 class GitHubDeploymentService:

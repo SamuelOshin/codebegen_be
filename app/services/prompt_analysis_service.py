@@ -13,12 +13,12 @@ Features:
 """
 
 import re
-import logging
+from loguru import logger
 from typing import Dict, List, Optional, Tuple, Set
 from collections import Counter
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+logger = logger
 
 
 @dataclass
