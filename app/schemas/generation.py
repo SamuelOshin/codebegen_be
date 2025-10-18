@@ -104,6 +104,10 @@ class GenerationResponse(BaseModel):
     diff_from_previous: Optional[str] = Field(None, description="Diff from previous version")
     changes_summary: Optional[Dict[str, Any]] = Field(None, description="Summary of changes from previous version")
     
+    # Storage URLs (NEW - Supabase integration)
+    download_url: Optional[str] = Field(None, description="Download URL (cloud or local)")
+    cloud_storage_enabled: Optional[bool] = Field(False, description="Whether cloud storage is enabled")
+    
     # Relationships
     artifacts: List[ArtifactResponse] = []
     

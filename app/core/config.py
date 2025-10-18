@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     TEMPLATE_PATH: str = "./templates"
     API_BASE_URL: str = "http://localhost:8000"
     
+    # Supabase Storage Configuration
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_SERVICE_KEY: Optional[str] = None
+    SUPABASE_BUCKET: str = "codebegen-projects"
+    
+    # Storage Options
+    USE_CLOUD_STORAGE: bool = False  # Feature flag (default: false for backward compat)
+    CACHE_PATH: str = "./storage/cache"
+    CACHE_TTL_HOURS: int = 24
+    
+    # Optional: Auto-cleanup
+    AUTO_CLEANUP_ENABLED: bool = False
+    CLEANUP_INTERVAL_HOURS: int = 6
+    MAX_CACHE_AGE_HOURS: int = 48
+    
     # External Services
     GITHUB_CLIENT_ID: str
     GITHUB_CLIENT_SECRET: str
