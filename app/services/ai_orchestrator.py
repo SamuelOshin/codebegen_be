@@ -76,26 +76,26 @@ class AIOrchestrator:
         if self.initialized:
             return
             
-        print("Initializing AI Orchestrator with Provider Abstraction...")
+        logger.info("Initializing AI Orchestrator with Provider Abstraction...")
         
         # Check memory availability
         memory_info = await self._check_memory_availability()
-        print(f"💾 Available memory: {memory_info['available_mb']:,}MB")
-        print(f"🤖 LLM Provider: {settings.LLM_PROVIDER}")
+        logger.info(f"💾 Available memory: {memory_info['available_mb']:,}MB")
+        logger.info(f"🤖 LLM Provider: {settings.LLM_PROVIDER}")
         
         # Initialize providers
         try:
             await self.provider_factory.initialize_all_providers()
-            print("✅ LLM providers initialized successfully")
+            logger.info("✅ LLM providers initialized successfully")
         except Exception as e:
-            print(f"⚠️  Provider initialization warning: {e}")
-            print("📝 Will initialize providers on-demand")
+            logger.warning(f"⚠️  Provider initialization warning: {e}")
+            logger.info("📝 Will initialize providers on-demand")
         
         # Initialize enhanced prompt system
         await self._initialize_enhanced_prompt_system()
         
         self.initialized = True
-        print("✅ AI Orchestrator initialized successfully")
+        logger.info("✅ AI Orchestrator initialized successfully")
 
     async def _initialize_enhanced_prompt_system(self):
         """Initialize the enhanced prompt system with repositories"""
@@ -119,18 +119,18 @@ class AIOrchestrator:
             finally:
                 await db.close()
                 
-            print("Enhanced Prompt System initialized successfully")
+            logger.info("Enhanced Prompt System initialized successfully")
             
         except Exception as e:
-            print(f"Warning: Enhanced Prompt System initialization failed: {e}")
-            print("Falling back to basic prompt processing")
+            logger.warning(f"Warning: Enhanced Prompt System initialization failed: {e}")
+            logger.info("Falling back to basic prompt processing")
             self.enhanced_prompt_system = None
             
             self.initialized = True
-            print("AI Orchestrator initialized successfully")
+            logger.info("AI Orchestrator initialized successfully")
             
         except Exception as e:
-            print(f"Failed to initialize AI Orchestrator: {e}")
+            logger.error(f"Failed to initialize AI Orchestrator: {e}")
             self.initialized = False
             raise
 
@@ -166,7 +166,7 @@ class AIOrchestrator:
                     original_prompt = generation_data.get("prompt", "")
                     
                     if user_id:
-                        print(f"Performing context analysis for user {user_id}")
+                        logger.info(f"Performing context analysis for user {user_id}")
                         context_analysis = self.enhanced_prompt_system.generate_with_context(
                             original_prompt, user_id
                         )
@@ -179,9 +179,9 @@ class AIOrchestrator:
                             generation_data["enhanced_prompts"] = enhanced_prompts
                         
                         context_time = time.time() - context_start
-                        print(f"Context analysis completed in {context_time:.2f}s")
+                        logger.info(f"Context analysis completed in {context_time:.2f}s")
                     else:
-                        print("No user_id provided, skipping context analysis")
+                        logger.info("No user_id provided, skipping context analysis")
                 
                 # Stage 1: Enhanced Schema extraction
                 schema_start = time.time()
@@ -567,7 +567,7 @@ class AIOrchestrator:
             return schema
             
         except Exception as e:
-            print(f"Error in schema extraction: {e}")
+            logger.error(f"Error in schema extraction: {e}")
             # Fallback schema
             return {
                 "entities": [
@@ -602,15 +602,15 @@ class AIOrchestrator:
     ) -> Dict[str, str]:
         """Generate code files using provider abstraction with optional incremental file saving"""
         try:
-            print(f"\n{'='*80}")
-            print(f"🎯 AI ORCHESTRATOR: Starting code generation")
-            print(f"{'='*80}\n")
+            logger.info(f"\n{'='*80}")
+            logger.info(f"🎯 AI ORCHESTRATOR: Starting code generation")
+            logger.info(f"{'='*80}\n")
             
             # Get code generation provider
             provider = await self.provider_factory.get_provider(LLMTask.CODE_GENERATION)
             provider_info = await provider.get_provider_info()
             
-            print(f"🤖 Using provider: {provider_info.get('name', 'Unknown')}")
+            logger.info(f"🤖 Using provider: {provider_info.get('name', 'Unknown')}")
             logger.info(f"Using provider: {provider_info.get('name', 'Unknown')}")
             
             prompt = generation_data.get("prompt", "")
@@ -623,16 +623,16 @@ class AIOrchestrator:
             # Call with file_manager and generation_id for incremental saving
             files = await provider.generate_code(prompt, schema, context, file_manager, generation_id, event_callback)
             
-            print(f"\n{'='*80}")
-            print(f"✅ AI ORCHESTRATOR: Code generation completed")
-            print(f"{'='*80}\n")
+            logger.info(f"\n{'='*80}")
+            logger.info(f"✅ AI ORCHESTRATOR: Code generation completed")
+            logger.info(f"{'='*80}\n")
             
             return files
             
         except Exception as e:
-            print(f"\n{'='*80}")
-            print(f"❌ AI ORCHESTRATOR ERROR in code generation: {e}")
-            print(f"{'='*80}\n")
+            logger.info(f"\n{'='*80}")
+            logger.error(f"❌ AI ORCHESTRATOR ERROR in code generation: {e}")
+            logger.info(f"{'='*80}\n")
             logger.error(f"Error in code generation: {e}")
             # Fallback code generation
             template = generation_data.get("tech_stack", "fastapi_basic")
