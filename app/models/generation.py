@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import TYPE_CHECKING
 
 from app.models.base import BaseModel
+from app.models.preview import PreviewInstance
 
 
 if TYPE_CHECKING:
@@ -77,6 +78,9 @@ class Generation(BaseModel):
     )
     parent_generation: Mapped[Optional["Generation"]] = relationship(
         "Generation", foreign_keys=[parent_generation_id], remote_side="Generation.id"
+    )
+    preview_instances: Mapped[List["PreviewInstance"]] = relationship(
+        "PreviewInstance", back_populates="generation", cascade="all, delete-orphan"
     )
     
     def __repr__(self) -> str:

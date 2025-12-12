@@ -26,6 +26,7 @@ from app.services.enhanced_prompt_system import (
     create_enhanced_prompt_system
 )
 from app.services.generation_service import GenerationService
+from app.services.storage_manager import HybridStorageManager
 from app.models.generation import Generation
 
 # Configure logger
@@ -313,7 +314,8 @@ class AIOrchestrator:
             db = await get_db_session()
             try:
                 # Initialize GenerationService with current DB session
-                generation_service = GenerationService(db, file_manager)
+                storage_manager = HybridStorageManager()
+                generation_service = GenerationService(db, storage_manager)
                 
                 # Get the generation (it should already exist, created by the router)
                 generation = await db.get(Generation, generation_id)
