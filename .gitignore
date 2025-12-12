@@ -40,7 +40,6 @@ junitxml-*.xml
 .ruff_cache/
 
 # IDEs and editors
-.vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
