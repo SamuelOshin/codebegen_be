@@ -30,6 +30,7 @@ from app.schemas.user import UserResponse
 from app.services.ai_orchestrator import ai_orchestrator
 from app.services.file_manager import file_manager
 from app.services.generation_service import GenerationService
+from app.services.storage_manager import HybridStorageManager
 from app.services.github_service import github_service
 from app.services.quality_assessor import quality_assessor
 from app.services.generation_file_service import (
@@ -2471,7 +2472,8 @@ async def list_project_versions(
             )
         
         # Use GenerationService to list versions
-        generation_service = GenerationService(db, file_manager)
+        storage_manager = HybridStorageManager()
+        generation_service = GenerationService(db, storage_manager)
         generations = await generation_service.list_project_generations(
             project_id,
             include_failed=include_failed
@@ -2543,7 +2545,8 @@ async def get_generation_by_version(
             )
         
         # Use GenerationService to get version
-        generation_service = GenerationService(db, file_manager)
+        storage_manager = HybridStorageManager()
+        generation_service = GenerationService(db, storage_manager)
         generation = await generation_service.get_generation_by_version(
             project_id,
             version
@@ -2597,7 +2600,8 @@ async def get_active_generation(
             )
         
         # Use GenerationService to get active generation
-        generation_service = GenerationService(db, file_manager)
+        storage_manager = HybridStorageManager()
+        generation_service = GenerationService(db, storage_manager)
         generation = await generation_service.get_active_generation(project_id)
         
         if not generation:
@@ -2674,7 +2678,8 @@ async def activate_generation(
         previous_active_id = str(project.active_generation_id) if project.active_generation_id else None
         
         # Use GenerationService to set active generation
-        generation_service = GenerationService(db, file_manager)
+        storage_manager = HybridStorageManager()
+        generation_service = GenerationService(db, storage_manager)
         await generation_service.set_active_generation(project_id, generation_id)
         
         # Refresh to get updated data
@@ -2731,7 +2736,8 @@ async def compare_versions(
             )
         
         # Use GenerationService to compare versions
-        generation_service = GenerationService(db, file_manager)
+        storage_manager = HybridStorageManager()
+        generation_service = GenerationService(db, storage_manager)
         comparison = await generation_service.compare_generations(
             project_id,
             from_version,
