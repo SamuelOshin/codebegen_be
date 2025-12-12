@@ -40,7 +40,6 @@ junitxml-*.xml
 .ruff_cache/
 
 # IDEs and editors
-.vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
@@ -131,3 +130,6 @@ local_settings.py
 /test_*
 /model_inference_output_1755555449/
 storage/
+temp_auto_push.bat
+temp_interactive_push.bat
+branch_structure.json

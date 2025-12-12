@@ -14,8 +14,9 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.exceptions import setup_exception_handlers
-from app.routers import auth, projects, generations, ai, webhooks, ab_testing, unified_generation, templates
+from app.routers import auth, projects, generations, ai, webhooks, ab_testing, unified_generation, templates, preview
 from app.services.ai_orchestrator import ai_orchestrator, AIOrchestrator
+from app.services.preview_service import PreviewService
 
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -56,6 +57,7 @@ app.include_router(templates.router, prefix="/templates", tags=["Templates"])
 app.include_router(unified_generation.router, prefix="/api/v2/generation", tags=["Generation (Unified)"], deprecated=True)
 
 app.include_router(generations.router, prefix="/generations", tags=["Generations"])
+app.include_router(preview.router, prefix="/api/v1", tags=["Preview"])
 # app.include_router(ai.router, prefix="/ai", tags=["AI Services (Legacy)"], deprecated=True)
 
 app.include_router(ab_testing.router, prefix="/api/v1", tags=["A/B Testing"])
@@ -73,6 +75,33 @@ async def startup_event():
         print(f"Failed to initialize AI orchestrator: {e}")
         # Set a None value so we can handle it gracefully
         app.state.ai_orchestrator = None
+
+    # Initialize preview cleanup task
+    try:
+        from app.core.database import get_async_db
+        from app.services.preview_service import PreviewService
+        import asyncio
+
+        preview_service = PreviewService()
+
+        async def cleanup_expired_previews():
+            """Background task to cleanup expired preview instances."""
+            while True:
+                try:
+                    async for db in get_async_db():
+                        await preview_service.cleanup_expired_previews(db)
+                        break
+                    await asyncio.sleep(300)  # Run every 5 minutes
+                except Exception as e:
+                    logger.error(f"Error in preview cleanup task: {e}")
+                    await asyncio.sleep(60)  # Retry after 1 minute on error
+
+        # Start background cleanup task
+        asyncio.create_task(cleanup_expired_previews())
+        print("Preview cleanup task started")
+
+    except Exception as e:
+        print(f"Failed to start preview cleanup task: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
