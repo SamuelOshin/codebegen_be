@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 from app.models.generation import Generation
 from app.models.project import Project
 from app.services.file_manager import FileManager
+from app.services.storage_manager import HybridStorageManager
 
 logger = logger
 
@@ -50,16 +51,16 @@ class GenerationService:
     AI code generations with version tracking and hierarchical storage.
     """
     
-    def __init__(self, db: AsyncSession, file_manager: Optional[FileManager] = None):
+    def __init__(self, db: AsyncSession, storage_manager: Optional[HybridStorageManager] = None):
         """
         Initialize GenerationService.
         
         Args:
             db: Database session
-            file_manager: FileManager instance (injected for testability)
+            storage_manager: Storage manager instance (injected for testability)
         """
         self.db = db
-        self.file_manager = file_manager or FileManager()
+        self.storage_manager = storage_manager or HybridStorageManager()
     
     async def create_generation(
         self,
@@ -179,8 +180,8 @@ class GenerationService:
             if not generation:
                 raise GenerationNotFoundError(f"Generation {generation_id} not found")
             
-            # Save files to hierarchical storage
-            storage_path, file_count, total_size_bytes = await self.file_manager.save_generation_files_hierarchical(
+            # Save files to hybrid storage (local + cloud)
+            storage_path, file_count, total_size_bytes = await self.storage_manager.save_generation(
                 project_id=generation.project_id,
                 generation_id=generation_id,
                 version=generation.version,
@@ -206,7 +207,7 @@ class GenerationService:
             
             # Create diff from previous version if exists
             if generation.version > 1:
-                diff_path = await self.file_manager.create_generation_diff(
+                diff_path = await self.storage_manager.file_manager.create_generation_diff(
                     project_id=generation.project_id,
                     from_version=generation.version - 1,
                     to_version=generation.version

@@ -23,6 +23,7 @@ from app.services.generation_service import (
     ProjectNotFoundError
 )
 from app.services.file_manager import FileManager
+from app.services.storage_manager import HybridStorageManager
 
 
 # Test database setup
@@ -56,8 +57,7 @@ async def async_db(async_engine):
         async_engine, class_=AsyncSession, expire_on_commit=False
     )
     
-    async with async_session() as session:
-        yield session
+    return async_session()
 
 
 @pytest.fixture
@@ -69,12 +69,15 @@ def temp_storage():
 
 
 @pytest.fixture
-def file_manager(temp_storage, monkeypatch):
-    """Create FileManager with temp storage"""
+def storage_manager(temp_storage, monkeypatch):
+    """Create HybridStorageManager with temp storage"""
     # Patch settings to use temp directory
     monkeypatch.setattr("app.services.file_manager.settings.FILE_STORAGE_PATH", temp_storage)
     monkeypatch.setattr("app.services.file_manager.settings.TEMP_STORAGE_PATH", temp_storage)
-    return FileManager()
+    # Create FileManager with patched settings
+    file_mgr = FileManager()
+    # Create HybridStorageManager with the configured FileManager
+    return HybridStorageManager(file_manager=file_mgr)
 
 
 @pytest.fixture
@@ -112,51 +115,95 @@ class TestGenerationService:
     """Test suite for GenerationService"""
     
     @pytest.mark.asyncio
-    async def test_create_generation_auto_versioning(self, async_db, file_manager, test_project, test_user):
+    async def test_create_generation_auto_versioning(self, storage_manager):
         """Test that create_generation auto-assigns version numbers"""
-        service = GenerationService(async_db, file_manager)
-        
-        # Create first generation
-        gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
-            prompt="Create a REST API"
+        # Create database session directly
+        engine = create_async_engine(
+            TEST_DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
         )
         
-        assert gen1.version == 1
-        assert gen1.project_id == test_project.id
-        assert gen1.is_active == False
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
         
-        # Create second generation
-        gen2 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
-            prompt="Add authentication"
-        )
+        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        session = async_session()
         
-        assert gen2.version == 2
-        assert gen2.project_id == test_project.id
-        
-        # Create third generation
-        gen3 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
-            prompt="Add database"
-        )
-        
-        assert gen3.version == 3
+        try:
+            # Create test user and project directly
+            user = User(
+                id=str(uuid4()),
+                email="test@example.com",
+                username="testuser",
+                hashed_password="hashed",
+                is_active=True
+            )
+            session.add(user)
+            
+            project = Project(
+                id=str(uuid4()),
+                name="Test Project",
+                description="Test project for generation versioning",
+                user_id=user.id
+            )
+            session.add(project)
+            await session.commit()
+            await session.refresh(user)
+            await session.refresh(project)
+            
+            service = GenerationService(session, storage_manager)
+
+            # Create first generation
+            gen1 = await service.create_generation(
+                project_id=project.id,
+                user_id=user.id,
+                prompt="Create a REST API"
+            )
+            
+            assert gen1.version == 1
+            assert gen1.project_id == project.id
+            assert gen1.is_active == False
+            
+            # Create second generation
+            gen2 = await service.create_generation(
+                project_id=project.id,
+                user_id=user.id,
+                prompt="Add authentication"
+            )
+            
+            assert gen2.version == 2
+            assert gen2.project_id == project.id
+            
+            # Create third generation
+            gen3 = await service.create_generation(
+                project_id=project.id,
+                user_id=user.id,
+                prompt="Add database models"
+            )
+            
+            assert gen3.version == 3
+            assert gen3.project_id == project.id
+            
+        finally:
+            await session.close()
+            await engine.dispose()
     
     @pytest.mark.asyncio
     async def test_save_generation_output_hierarchical_storage(
-        self, async_db, file_manager, test_project, test_user, temp_storage
+        self, async_db, storage_manager, test_project, test_user, temp_storage
     ):
         """Test save_generation_output creates hierarchical storage"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create generation
         generation = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="Create a REST API"
         )
         
@@ -204,15 +251,19 @@ class TestGenerationService:
     
     @pytest.mark.asyncio
     async def test_save_generation_creates_diff(
-        self, async_db, file_manager, test_project, test_user
+        self, async_db, storage_manager, test_project, test_user
     ):
         """Test that second generation creates diff from first"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create and save first generation
         gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="Create initial API"
         )
         
@@ -256,14 +307,18 @@ class TestGenerationService:
         assert "files_modified" in saved_gen2.changes_summary
     
     @pytest.mark.asyncio
-    async def test_set_active_generation(self, async_db, file_manager, test_project, test_user):
+    async def test_set_active_generation(self, async_db, storage_manager, test_project, test_user):
         """Test set_active_generation updates DB and creates symlink"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create two generations
         gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="Version 1"
         )
         gen1.status = "completed"
@@ -300,14 +355,18 @@ class TestGenerationService:
         assert test_project.active_generation_id == gen2.id
     
     @pytest.mark.asyncio
-    async def test_get_generation_by_version(self, async_db, file_manager, test_project, test_user):
+    async def test_get_generation_by_version(self, async_db, storage_manager, test_project, test_user):
         """Test retrieving generation by version number"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create multiple generations
         gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="V1"
         )
         
@@ -341,12 +400,16 @@ class TestGenerationService:
             await service.get_generation_by_version(test_project.id, 99)
     
     @pytest.mark.asyncio
-    async def test_get_active_generation(self, async_db, file_manager, test_project, test_user):
+    async def test_get_active_generation(self, async_db, storage_manager, test_project, test_user):
         """Test retrieving active generation"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # No active generation initially
-        active = await service.get_active_generation(test_project.id)
+        active = await service.get_active_generation(project.id)
         assert active is None
         
         # Create and activate generation
@@ -367,14 +430,18 @@ class TestGenerationService:
         assert active.is_active == True
     
     @pytest.mark.asyncio
-    async def test_list_project_generations(self, async_db, file_manager, test_project, test_user):
+    async def test_list_project_generations(self, async_db, storage_manager, test_project, test_user):
         """Test listing all generations for a project"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create multiple generations with different statuses
         gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="V1"
         )
         gen1.status = "completed"
@@ -410,14 +477,18 @@ class TestGenerationService:
         assert all_generations[2].version == 1
     
     @pytest.mark.asyncio
-    async def test_compare_generations(self, async_db, file_manager, test_project, test_user, temp_storage):
+    async def test_compare_generations(self, async_db, storage_manager, test_project, test_user, temp_storage):
         """Test comparing two generations"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         # Create first generation
         gen1 = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="V1"
         )
         
@@ -468,13 +539,17 @@ class TestGenerationService:
         assert "app/main.py" in comparison["files_modified"]
     
     @pytest.mark.asyncio
-    async def test_update_generation_status(self, async_db, file_manager, test_project, test_user):
+    async def test_update_generation_status(self, async_db, storage_manager, test_project, test_user):
         """Test updating generation status"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         gen = await service.create_generation(
-            project_id=test_project.id,
-            user_id=test_user.id,
+            project_id=project.id,
+            user_id=user.id,
             prompt="Test"
         )
         
@@ -497,54 +572,60 @@ class TestGenerationService:
         assert gen.error_message == "Test error"
     
     @pytest.mark.asyncio
-    async def test_error_handling_nonexistent_project(self, async_db, file_manager, test_user):
+    async def test_error_handling_nonexistent_project(self, async_db, storage_manager, test_user):
         """Test error handling for non-existent project"""
-        service = GenerationService(async_db, file_manager)
+        # Await the async fixture
+        user = await test_user
+        
+        service = GenerationService(async_db, storage_manager)
         
         with pytest.raises(ProjectNotFoundError):
             await service.create_generation(
                 project_id="non-existent-project-id",
-                user_id=test_user.id,
+                user_id=user.id,
                 prompt="Test"
             )
     
     @pytest.mark.asyncio
-    async def test_error_handling_nonexistent_generation(self, async_db, file_manager):
+    async def test_error_handling_nonexistent_generation(self, async_db, storage_manager):
         """Test error handling for non-existent generation"""
-        service = GenerationService(async_db, file_manager)
+        service = GenerationService(async_db, storage_manager)
         
         with pytest.raises(GenerationNotFoundError):
             await service.update_generation_status("non-existent-gen-id", "completed")
     
     @pytest.mark.asyncio
-    async def test_version_persistence_across_sessions(self, async_engine, file_manager, test_project, test_user):
+    async def test_version_persistence_across_sessions(self, async_engine, storage_manager, test_project, test_user):
         """Test that version numbers persist across sessions"""
+        # Await the async fixtures
+        project = await test_project
+        user = await test_user
         
         # Session 1: Create gen1
         async_session = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
         async with async_session() as session:
-            service = GenerationService(session, file_manager)
+            service = GenerationService(session, storage_manager)
             gen1 = await service.create_generation(
-                project_id=test_project.id,
-                user_id=test_user.id,
+                project_id=project.id,
+                user_id=user.id,
                 prompt="V1"
             )
             assert gen1.version == 1
         
         # Session 2: Create gen2
         async with async_session() as session:
-            service = GenerationService(session, file_manager)
+            service = GenerationService(session, storage_manager)
             gen2 = await service.create_generation(
-                project_id=test_project.id,
-                user_id=test_user.id,
+                project_id=project.id,
+                user_id=user.id,
                 prompt="V2"
             )
             assert gen2.version == 2
         
         # Session 3: Verify both exist with correct versions
         async with async_session() as session:
-            service = GenerationService(session, file_manager)
-            all_gens = await service.list_project_generations(test_project.id, include_failed=True)
+            service = GenerationService(session, storage_manager)
+            all_gens = await service.list_project_generations(project.id, include_failed=True)
             assert len(all_gens) == 2
             versions = [g.version for g in all_gens]
             assert 1 in versions

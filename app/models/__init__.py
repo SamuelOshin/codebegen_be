@@ -9,6 +9,7 @@ from app.models.user import User
 from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project
 from app.models.generation import Generation, Artifact
+from app.models.preview import PreviewInstance, PreviewLog
 
 # Export all models for easy import
 __all__ = [
@@ -21,4 +22,6 @@ __all__ = [
     "Project",
     "Generation",
     "Artifact",
+    "PreviewInstance",
+    "PreviewLog",
 ]
